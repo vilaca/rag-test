@@ -42,6 +42,11 @@ RAG System REPL. Type 'exit' to quit.
 
 Type `exit` to quit.
 
+### Command-Line Arguments
+
+- **`subtitles`** (required): Path to the input text/subtitles file.
+  Example: `python main.py /path/to/your/subtitles.txt`
+
 ## Using your own file
 
 Run with any `.txt` file:
