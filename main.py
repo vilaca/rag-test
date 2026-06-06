@@ -152,15 +152,15 @@ class RAGSystem:
         self.index = faiss.IndexFlatIP(dimension)
         self.index.add(self.embeddings)
 
-    def init_generator(self, model_id: str = "gpt2"):
-        """Initialize the generator with better fallback."""
+    def init_generator(self, model_id: str = "distilgpt2"):
+        """Initialize the generator with DistilGPT2 as default."""
         try:
             tokenizer = AutoTokenizer.from_pretrained(model_id)
             model = AutoModelForCausalLM.from_pretrained(model_id)
             return pipeline("text-generation", model=model, tokenizer=tokenizer)
         except Exception as e:
             print(f"Failed to load {model_id}: {str(e)}. Falling back to a smaller model.")
-            fallback = "distilgpt2"  # Even smaller fallback
+            fallback = "gpt2"  # Fallback to original GPT-2 if DistilGPT2 fails
             try:
                 tokenizer = AutoTokenizer.from_pretrained(fallback)
                 model = AutoModelForCausalLM.from_pretrained(fallback)
@@ -613,7 +613,7 @@ def repl(rag: RAGSystem):
             
             # Clear thinking indicator
             print(" " * 50, end="\r")
-            print(f"Answer: {answer}")
+            print(f"\nAnswer: {answer}\n")
             
         except KeyboardInterrupt:
             print("\nExiting...")
@@ -637,8 +637,8 @@ def main():
 
     parser = argparse.ArgumentParser(description="RAG System for YouTube Subtitles")
     parser.add_argument("subtitles", nargs='+', type=str, help="Path(s) to the subtitles file(s)")
-    parser.add_argument("--model", type=str, default="gpt2",
-                       help="Text generation model to use (default: gpt2)")
+    parser.add_argument("--model", type=str, default="distilgpt2",
+                       help="Text generation model to use (default: distilgpt2)")
     parser.add_argument("--embedding-model", type=str, default="sentence-transformers/all-MiniLM-L6-v2",
                        help="Embedding model to use (default: sentence-transformers/all-MiniLM-L6-v2)")
     args = parser.parse_args()
