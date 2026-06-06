@@ -26,7 +26,13 @@ except ImportError:
 
 
 class RAGSystem:
-    def __init__(self, subtitles_path: str, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
+    def __init__(
+        self,
+        subtitles_path: str,
+        model_name: str = "sentence-transformers/multi-qa-mpnet-base-dot-v1",
+        use_mmap_index: bool = False,
+        index_file: str = "index.faiss",
+    ):
         """Initialize the RAG system with subtitles and embedding model."""
         self.subtitles_path = subtitles_path
         self.model_name = model_name
@@ -36,6 +42,8 @@ class RAGSystem:
         self.index = None
         self.subtitles = ""
         self.original_files = [subtitles_path]
+        self.use_mmap_index = use_mmap_index
+        self.index_file = index_file
 
         # Initialize Mistral/Devstral for generation
         self.generator = self.init_generator()
@@ -149,8 +157,18 @@ class RAGSystem:
         """Build FAISS index for fast similarity search."""
         dimension = self.embeddings.shape[1]
         # With normalized vectors, inner product ~= cosine similarity
-        self.index = faiss.IndexFlatIP(dimension)
-        self.index.add(self.embeddings)
+        base_index = faiss.IndexFlatIP(dimension)
+        base_index.add(self.embeddings)
+
+        if self.use_mmap_index:
+            try:
+                faiss.write_index(base_index, self.index_file)
+                self.index = faiss.read_index(self.index_file, faiss.IO_FLAG_MMAP)
+            except Exception as e:
+                print(f"Warning: failed to memory-map index ({e}). Using in-memory index.")
+                self.index = base_index
+        else:
+            self.index = base_index
 
     def init_generator(self, model_id: str = "distilgpt2"):
         """Initialize the generator with DistilGPT2 as default."""
@@ -169,36 +187,20 @@ class RAGSystem:
                 print(f"Failed to load fallback model {fallback}: {str(e2)}")
                 raise RuntimeError("Could not initialize any text generation model.")
 
-    def _expand_query(self, query: str) -> str:
-        """Expand some common question intents to improve retrieval recall."""
-        q = query.lower()
-        extras = []
-
-        if "reapply" in q:
-            extras.append("reapply every 2 hours after swimming sweating towel drying")
-        if "apply" in q and "reapply" not in q:
-            extras.append("apply before sun exposure 15 minutes")
-        if "mineral" in q and "chemical" in q:
-            extras.append("physical filter versus organic filter differences pros cons")
-
-        return query + (" " + " ".join(extras) if extras else "")
-
     def retrieve(self, query: str, k: int = 12) -> List[str]:
         """Retrieve top-k chunks relevant to the query with hybrid search."""
         if not self.chunks:
             return []
 
         k = min(k, len(self.chunks))
-        search_query = self._expand_query(query)
-        query_embedding = self.embedding_model.encode([search_query], convert_to_numpy=True).astype("float32")
+        query_embedding = self.embedding_model.encode([query], convert_to_numpy=True).astype("float32")
         faiss.normalize_L2(query_embedding)
         scores, indices = self.index.search(query_embedding, k)
         
-        # Filter out invalid indices and sort by score (descending)
-        valid_results = [(scores[0][i], self.chunks[indices[0][i]], indices[0][i]) 
-                        for i in range(len(indices[0])) 
+        # Filter out invalid indices; FAISS already returns results sorted by score.
+        valid_results = [(scores[0][i], self.chunks[indices[0][i]], indices[0][i])
+                        for i in range(len(indices[0]))
                         if indices[0][i] != -1]
-        valid_results.sort(key=lambda x: x[0], reverse=True)
         
         # Get more diverse results by ensuring we don't get too many similar chunks
         chunks = [chunk for _, chunk, _ in valid_results[:k]]
@@ -320,7 +322,6 @@ class RAGSystem:
             return ""
 
         keywords = self._query_keywords(query)
-        query_lower = query.lower()
 
         scored = []
         for i, sent in enumerate(candidates):
@@ -330,15 +331,6 @@ class RAGSystem:
             # Keyword overlap
             overlap = sum(1 for k in keywords if k in s_lower)
             score += overlap * 2.0
-
-            # Intent-aware boosts
-            if "reapply" in query_lower and any(x in s_lower for x in ["reapply", "every", "hours", "sweat", "water"]):
-                score += 2.5
-            if "apply" in query_lower and any(x in s_lower for x in ["before", "minutes", "apply"]):
-                score += 2.0
-            if any(x in query_lower for x in ["compare", "difference", "mineral", "chemical"]):
-                if any(x in s_lower for x in ["mineral", "chemical", "organic", "inorganic", "filter"]):
-                    score += 1.8
 
             if question_type == "advice" and any(x in s_lower for x in ["should", "recommend", "important", "best"]):
                 score += 0.8
@@ -354,21 +346,6 @@ class RAGSystem:
         top = [s for sc, s in scored[:12] if sc > 1.0]
         if not top:
             return self._no_clear_answer(query, context)
-
-        # Special handling for comparison questions
-        if all(x in query_lower for x in ["mineral", "chemical"]) and any(x in query_lower for x in ["compare", "vs", "difference"]):
-            mineral = next((s for s in top if "mineral" in s.lower() and "chemical" not in s.lower()), None)
-            chemical = next((s for s in top if ("chemical" in s.lower() or "organic" in s.lower()) and "mineral" not in s.lower()), None)
-
-            if mineral is None:
-                mineral = next((s for s in top if "mineral" in s.lower()), None)
-            if chemical is None:
-                chemical = next((s for s in top if "chemical" in s.lower() or "organic" in s.lower()), None)
-
-            if mineral and chemical:
-                if mineral.strip().lower() == chemical.strip().lower():
-                    return self._clean_answer(mineral)
-                return self._clean_answer(f"Mineral sunscreen: {mineral} Chemical sunscreen: {chemical}")
 
         # Pick 1-2 diverse sentences
         answer_parts = []
@@ -387,16 +364,6 @@ class RAGSystem:
 
     def _no_clear_answer(self, query: str, context: List[str]) -> str:
         """Provide a helpful response when no clear answer is found."""
-        q = query.lower()
-
-        # Practical fallbacks for common sunscreen questions
-        if "reapply" in q:
-            return "A practical rule is to reapply sunscreen about every 2 hours, and sooner after swimming, sweating, or towel-drying."
-        if "apply" in q and "reapply" not in q:
-            return "A practical rule is to apply sunscreen about 15 minutes before sun exposure so the film can set evenly."
-        if all(x in q for x in ["mineral", "chemical"]) and any(x in q for x in ["compare", "vs", "difference"]):
-            return "Mineral sunscreens (zinc oxide/titanium dioxide) mainly protect by scattering and absorbing UV at the skin surface; chemical sunscreens absorb UV and convert it to heat. In practice, the best sunscreen is the one you'll apply generously and reapply consistently."
-
         candidates = self._extract_candidate_sentences(context)
         if candidates:
             return f"I couldn't find a direct answer, but a relevant line is: {self._clean_answer(candidates[0])}"
@@ -410,24 +377,7 @@ class RAGSystem:
         return "I found some information but couldn't extract a clear answer."
 
     def _rule_based_answer(self, question: str) -> str:
-        """High-confidence practical answers for common sunscreen intents."""
-        q = question.lower()
-
-        if "cloudy" in q and "sunscreen" in q:
-            return "Yes. Use sunscreen even when it's cloudy—UVA still reaches skin through clouds. Apply in the morning, then reapply about every 2 hours when outdoors, and after swimming, sweating, or towel-drying."
-
-        if "reapply" in q and "sunscreen" in q:
-            return "Reapply sunscreen about every 2 hours while outdoors, and immediately after swimming, sweating, or towel-drying."
-
-        if any(x in q for x in ["when to use sunscreen", "when should i use sunscreen", "when should sunscreen be applied", "when apply sunscreen"]):
-            return "Use sunscreen every day on exposed skin during daylight. Apply as the last skincare step before makeup, ideally 15 minutes before sun exposure."
-
-        if "sunscreen" in q and any(x in q for x in ["need", "should", "when", "daily", "every day", "apply"]):
-            return "As a practical rule: wear sunscreen daily on exposed skin during daytime, and reapply every 2 hours when outdoors (sooner after water or sweat)."
-
-        if ("mineral" in q and "chemical" in q) and any(x in q for x in ["compare", "difference", "vs"]):
-            return "Mineral sunscreens (zinc oxide/titanium dioxide) form UV-protective filters at the skin surface; chemical sunscreens absorb UV and convert it to heat. Both can work well—pick one you can apply generously and reapply consistently."
-
+        """Optional rule-based override for known intents (disabled by default)."""
         return ""
 
     def _looks_fragmented(self, text: str) -> bool:
@@ -521,35 +471,15 @@ class RAGSystem:
             return self._provide_content_summary(question)
     
     def _provide_content_summary(self, question: str) -> str:
-        """Provide a summary of what the content actually discusses about the topic."""
+        """Provide a generic summary fallback when a direct answer is unavailable."""
         import re
-        
-        # Extract main topic from question
+
         keywords = re.findall(r'\b\w{4,}\b', question.lower())
         main_topic = keywords[0] if keywords else "this topic"
-        
-        # Common topics in this content based on our analysis
-        content_topics = {
-            'sunscreen': 'sunscreen types (mineral vs chemical), sunscreen myths, and recommendations for different skin types',
-            'skin cancer': 'skin cancer research, racial differences in skin cancer rates, and sun exposure studies',
-            'sun exposure': 'relationship between sun exposure and skin health, UV protection, and sun safety guidelines',
-            'skin health': 'skin barrier function, gut-skin connection, and general dermatology advice'
-        }
-        
-        # Find the most relevant content topic
-        best_match = None
-        best_score = 0
-        
-        for topic, description in content_topics.items():
-            score = len(set(keywords) & set(re.findall(r'\b\w{4,}\b', topic)))
-            if score > best_score:
-                best_score = score
-                best_match = description
-        
-        if best_match:
-            return f"The content doesn't provide a direct answer to this question, but it does discuss {best_match}. Would you like more information about that?"
-        else:
-            return f"I couldn't find specific information about {main_topic} in this content. The video focuses more on debunking myths and discussing general skin health topics."
+        return (
+            f"I couldn't find a direct answer about {main_topic} in this content. "
+            "Try rephrasing your question or asking for a specific definition, example, or comparison."
+        )
 
     def query(self, question: str) -> str:
         """Answer a question using the RAG system with error handling."""
@@ -641,6 +571,10 @@ def main():
                        help="Text generation model to use (default: distilgpt2)")
     parser.add_argument("--embedding-model", type=str, default="sentence-transformers/all-MiniLM-L6-v2",
                        help="Embedding model to use (default: sentence-transformers/all-MiniLM-L6-v2)")
+    parser.add_argument("--mmap-index", action="store_true",
+                       help="Memory-map the FAISS index from disk to reduce RAM usage")
+    parser.add_argument("--index-file", type=str, default="index.faiss",
+                       help="Path for FAISS index file when using --mmap-index (default: index.faiss)")
     args = parser.parse_args()
 
     # Check if all files exist
@@ -654,6 +588,9 @@ def main():
         print(f"  - Input files: {', '.join(args.subtitles)}")
         print(f"  - Embedding model: {args.embedding_model}")
         print(f"  - Generation model: {args.model}")
+        print(f"  - Memory-mapped index: {'enabled' if args.mmap_index else 'disabled'}")
+        if args.mmap_index:
+            print(f"  - Index file: {args.index_file}")
         
         # Load and combine multiple files
         combined_parts = []
@@ -670,7 +607,12 @@ def main():
         combined_text = "\n\n".join(combined_parts)
 
         # Create RAG system with combined content
-        rag = RAGSystem(args.subtitles[0], model_name=args.embedding_model)  # Use first file path as identifier
+        rag = RAGSystem(
+            args.subtitles[0],
+            model_name=args.embedding_model,
+            use_mmap_index=args.mmap_index,
+            index_file=args.index_file,
+        )  # Use first file path as identifier
         rag.original_files = args.subtitles
         # Set the combined content
         rag.subtitles = combined_text
