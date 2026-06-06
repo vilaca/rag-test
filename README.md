@@ -47,6 +47,14 @@ Type `exit` to quit.
 - **`subtitles`** (required): Path to the input text/subtitles file.
   Example: `python main.py /path/to/your/subtitles.txt`
 
+- **`--model`** (optional): Text generation model to use.
+  Default: `gpt2`
+  Example: `python main.py muffin.txt --model distilgpt2`
+
+- **`--embedding-model`** (optional): Embedding model for vector search.
+  Default: `sentence-transformers/all-MiniLM-L6-v2`
+  Example: `python main.py muffin.txt --embedding-model sentence-transformers/all-mpnet-base-v2`
+
 ## Using your own file
 
 Run with any `.txt` file:
