@@ -27,10 +27,12 @@ pip install -r requirements.txt
 
 ## Run
 
-Use `main.py` and pass a text/subtitles file path:
+Use `main.py` and pass one or more text/subtitles file paths.
+
+Full command example using all files in `dataset/`:
 
 ```bash
-python main.py muffin.txt
+python3 main.py dataset/muffin.txt dataset/muffin-2.txt dataset/muffin-3.txt dataset/muffin-4.txt dataset/muffin-5.txt
 ```
 
 You will enter an interactive prompt:
@@ -44,24 +46,29 @@ Type `exit` to quit.
 
 ### Command-Line Arguments
 
-- **`subtitles`** (required): Path to the input text/subtitles file.
-  Example: `python main.py /path/to/your/subtitles.txt`
+- **`subtitles`** (required): One or more paths to input text/subtitles files.
+  Example: `python3 main.py /path/to/file1.txt /path/to/file2.txt`
 
 - **`--model`** (optional): Text generation model to use.
   Default: `gpt2`
-  Example: `python main.py muffin.txt --model distilgpt2`
+  Example: `python3 main.py dataset/muffin.txt --model distilgpt2`
 
 - **`--embedding-model`** (optional): Embedding model for vector search.
   Default: `sentence-transformers/all-MiniLM-L6-v2`
-  Example: `python main.py muffin.txt --embedding-model sentence-transformers/all-mpnet-base-v2`
+  Example: `python3 main.py dataset/muffin.txt --embedding-model sentence-transformers/all-mpnet-base-v2`
 
-## Using your own file
+## Using your own file(s)
 
-Run with any `.txt` file:
+Run with any `.txt` file(s):
 
 ```bash
-python main.py /path/to/your/subtitles.txt
+python3 main.py /path/to/your/subtitles1.txt /path/to/your/subtitles2.txt
 ```
+
+## Dataset
+
+The dataset used in this repository is taken from the YouTube channel **Lab Muffin Beauty Science**:
+https://www.youtube.com/@LabMuffinBeautyScience/videos
 
 ## Notes
 
