@@ -21,7 +21,9 @@ class RAGSystem(RetrievalMixin, AnsweringMixin):
         """Initialize the RAG system with content and embedding model."""
         self.content_path = content_path
         self.model_name = model_name
-        self.embedding_model = SentenceTransformer(model_name)
+        # Use the specified model or default to NV-Embed-v2
+        embedding_model_name = model_name if model_name else "nvidia/NV-Embed-v2"
+        self.embedding_model = SentenceTransformer(embedding_model_name)
         self.chunks: List[str] = []
         self.embeddings = None
         self.index = None

@@ -12,8 +12,9 @@ The system uses an enhanced RAG architecture with the following components:
 - **Combined Results**: Reciprocal Rank Fusion for optimal coverage
 
 ### 2. **Advanced Embedding Models**
-- **Primary**: `BAAI/bge-large-en-v1.5` for state-of-the-art semantic understanding
-- **Fallback**: `sentence-transformers/multi-qa-mpnet-base-dot-v1` for compatibility
+- **Primary**: `nvidia/NV-Embed-v2` (state-of-the-art, optimized for retrieval)
+- **Alternative**: `Alibaba-NLP/gte-large-en-v1.5` (excellent general-purpose)
+- **Fallback**: `sentence-transformers/multi-qa-mpnet-base-dot-v1` (compatibility)
 
 ### 3. **Hierarchical Chunking**
 - **Multi-level structure**: Document → Section → Paragraph → Chunk
@@ -203,6 +204,9 @@ pip install FlagEmbedding==1.1.0
 
 # The system automatically uses all improvements
 python main.py --files your_document.txt
+
+# Use alternative embedding models
+python main.py --files your_document.txt --embedding-model Alibaba-NLP/gte-large-en-v1.5
 ```
 
 ## Performance Characteristics

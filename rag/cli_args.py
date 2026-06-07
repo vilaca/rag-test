@@ -16,8 +16,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--embedding-model",
         type=str,
-        default="sentence-transformers/all-MiniLM-L6-v2",
-        help="Embedding model to use (default: sentence-transformers/all-MiniLM-L6-v2)",
+        default="nvidia/NV-Embed-v2",
+        help="Embedding model to use (default: nvidia/NV-Embed-v2)",
     )
     parser.add_argument(
         "--mmap-index",
