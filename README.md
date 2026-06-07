@@ -15,11 +15,18 @@ The system uses an enhanced RAG architecture with the following components:
 - **Primary**: `BAAI/bge-large-en-v1.5` for state-of-the-art semantic understanding
 - **Fallback**: `sentence-transformers/multi-qa-mpnet-base-dot-v1` for compatibility
 
-### 3. **Intelligent Chunking**
-- Semantic-aware chunking that respects sentence/paragraph boundaries
-- Dynamic chunk sizing based on content structure
-- Overlap preservation for context continuity
-- **Embedding-based boundary detection** using semantic similarity (similarity < 0.7 indicates topic shift)
+### 3. **Hierarchical Chunking**
+- **Multi-level structure**: Document → Section → Paragraph → Chunk
+- **Context preservation**: Stores section metadata for each chunk
+- **Intelligent reconstruction**: Reconstructs broader context during retrieval
+- **Reduced fragmentation**: Related content stays together
+- **Broad question support**: Better answers for comprehensive queries
+
+**Benefits over flat chunking:**
+- Better context reconstruction for answers
+- Less fragmentation of related concepts
+- More accurate responses to broad questions
+- Preserves document structure relationships
 
 ### 4. **Advanced Retrieval Pipeline**
 - **Hybrid Retrieval**: FAISS (dense) + BM25 (sparse) combination
@@ -42,14 +49,17 @@ The system uses an enhanced RAG architecture with the following components:
 ## Processing Pipeline
 
 1. **Content Ingestion**: Load and preprocess text files
-2. **Semantic Chunking**: Split content into meaningful units
-3. **Hybrid Embedding**: Generate both dense and sparse representations
-4. **Index Construction**: Build optimized search structures
-5. **Query Processing**: Hybrid retrieval with relevance filtering
-6. **Cross-Encoder Reranking**: Precise relevance scoring using BAAI/bge-reranker-base
-7. **Dynamic Filtering**: Query-type adaptive relevance thresholds
-8. **Answer Synthesis**: Type-specific generation with post-processing
-9. **Response Delivery**: Formatted answers with source citations
+2. **Hierarchical Chunking**: Build document → section → paragraph structure
+3. **Semantic Chunking**: Split paragraphs with embedding-based boundaries
+4. **Metadata Storage**: Preserve section/paragraph relationships
+5. **Hybrid Embedding**: Generate both dense and sparse representations
+6. **Index Construction**: Build optimized search structures
+7. **Query Processing**: Hybrid retrieval with relevance filtering
+8. **Cross-Encoder Reranking**: Precise relevance scoring using BAAI/bge-reranker-base
+9. **Context Reconstruction**: Add section context to retrieved chunks
+10. **Dynamic Filtering**: Query-type adaptive relevance thresholds
+11. **Answer Synthesis**: Type-specific generation with post-processing
+12. **Response Delivery**: Formatted answers with source citations
 
 It:
 - loads input `.txt` files,
