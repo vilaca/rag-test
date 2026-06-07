@@ -49,7 +49,7 @@ The system uses an enhanced RAG architecture with the following components:
 6. **Cross-Encoder Reranking**: Precise relevance scoring using BAAI/bge-reranker-base
 7. **Dynamic Filtering**: Query-type adaptive relevance thresholds
 8. **Answer Synthesis**: Type-specific generation with post-processing
-7. **Response Delivery**: Formatted answers with source citations
+9. **Response Delivery**: Formatted answers with source citations
 
 It:
 - loads input `.txt` files,
