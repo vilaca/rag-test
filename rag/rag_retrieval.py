@@ -405,6 +405,15 @@ class RetrievalMixin:
             faiss.normalize_L2(self.embeddings)
         except Exception as e:
             print(f"⚠️  Failed to generate embeddings: {e}")
+            if "out of bounds" in str(e) or "dimension" in str(e):
+                print("   This may indicate:")
+                print("   - Input sequences too long for the model")
+                print("   - Model compatibility issues")
+                print("   - Corrupted model download")
+                print("   Try:")
+                print("   1. Using a different model")
+                print("   2. Upgrading transformers (pip install --upgrade transformers)")
+                print("   3. Clearing model cache (rm -rf ~/.cache/huggingface/hub/)")
             self.embeddings = None
         
         # Initialize BM25 for hybrid retrieval
