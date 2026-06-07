@@ -24,17 +24,26 @@ class RAGSystem(RetrievalMixin, AnsweringMixin):
         """Initialize the RAG system with content and embedding model."""
         self.content_path = content_path
         self.model_name = model_name
-        # Use the specified model or default to NV-Embed-v2
-        embedding_model_name = model_name if model_name else "nvidia/NV-Embed-v2"
+        # Use the specified model or default to a smaller high-quality alternative
+        embedding_model_name = model_name if model_name else "BAAI/bge-large-en-v1.5"
         
         # Some models require trust_remote_code
         trust_remote_code = ("gte-large" in embedding_model_name.lower() or 
                            "nv-embed" in embedding_model_name.lower())
         
-        self.embedding_model = SentenceTransformer(
-            embedding_model_name,
-            trust_remote_code=trust_remote_code
-        )
+        try:
+            # Try to load the model with timeout
+            self.embedding_model = SentenceTransformer(
+                embedding_model_name,
+                trust_remote_code=trust_remote_code
+            )
+        except Exception as e:
+            if "nv-embed" in embedding_model_name.lower():
+                print(f"⚠️  NV-Embed-v2 failed to load: {e}")
+                print("   Falling back to BAAI/bge-large-en-v1.5...")
+                self.embedding_model = SentenceTransformer("BAAI/bge-large-en-v1.5")
+            else:
+                raise RuntimeError(f"Failed to load embedding model {embedding_model_name}: {e}")
         self.chunks: List[str] = []
         self.embeddings = None
         self.index = None
