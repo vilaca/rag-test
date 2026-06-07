@@ -12,7 +12,8 @@ The system uses an enhanced RAG architecture with the following components:
 - **Combined Results**: Reciprocal Rank Fusion for optimal coverage
 
 ### 2. **Advanced Embedding Models**
-- **Primary**: `nvidia/NV-Embed-v2` (state-of-the-art, optimized for retrieval)
+- **Default**: `BAAI/bge-large-en-v1.5` (excellent balance of quality and size)
+- **Alternative**: `nvidia/NV-Embed-v2` (state-of-the-art, but large - 1.5GB)
 - **Alternative**: `Alibaba-NLP/gte-large-en-v1.5` (excellent general-purpose)
 - **Fallback**: `sentence-transformers/multi-qa-mpnet-base-dot-v1` (compatibility)
 
@@ -205,7 +206,8 @@ pip install FlagEmbedding==1.1.0
 # The system automatically uses all improvements
 python main.py --files your_document.txt
 
-# Use alternative embedding models
+# Use alternative embedding models (default is BAAI/bge-large-en-v1.5)
+python main.py --files your_document.txt --embedding-model nvidia/NV-Embed-v2
 python main.py --files your_document.txt --embedding-model Alibaba-NLP/gte-large-en-v1.5
 ```
 
