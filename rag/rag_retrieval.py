@@ -1,7 +1,9 @@
 """Retrieval and indexing mixin for the RAG system."""
 
 import re
-from typing import List, Dict, Tuple
+import time
+from typing import List, Dict, Tuple, Optional
+import json
 
 import faiss
 import numpy as np
@@ -10,8 +12,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 
 
 class RetrievalMixin:
-    def split_chunks(self, chunk_size: int = 512, overlap: int = 100, use_semantic_chunking: bool = True):
-        """Split content into overlapping chunks for better context preservation."""
+    def split_chunks(self, chunk_size: int = 512, overlap: int = 100, use_semantic_chunking: bool = True, use_hierarchical: bool = True):
+        """Split content into overlapping chunks with hierarchical metadata."""
         if chunk_size <= 0:
             raise ValueError("chunk_size must be > 0")
         if overlap < 0:
@@ -21,13 +23,39 @@ class RetrievalMixin:
 
         # Keep paragraph structure first (don't collapse newlines too early)
         raw_text = self.content.replace("\r\n", "\n").replace("\r", "\n")
+
+        # Build hierarchical structure for metadata preservation
+        hierarchical_structure = self._build_hierarchical_structure(raw_text)
         
-        # Check if this looks like a structured document with headings
-        if self._is_structured_document(raw_text):
+        # Store metadata for context reconstruction
+        self.chunk_metadata = []
+        
+        if use_hierarchical and hierarchical_structure['paragraphs']:
+            # Hierarchical chunking: work with paragraphs and preserve metadata
+            chunks = []
+            
+            for para_data in hierarchical_structure['paragraphs']:
+                paragraph_text = para_data['text']
+                
+                # Split paragraph into chunks with overlap
+                para_chunks = self._chunk_paragraph(
+                    paragraph_text, 
+                    chunk_size, 
+                    overlap,
+                    para_data['section_title'],
+                    para_data['section_index'],
+                    para_data['paragraph_index']
+                )
+                chunks.extend(para_chunks)
+            
+            self.chunks = chunks
+        elif self._is_structured_document(raw_text):
             chunks = self._split_structured_document(raw_text, chunk_size, overlap)
+            self.chunks = chunks
         elif use_semantic_chunking:
             # Semantic-aware chunking based on sentences and paragraphs
             chunks = self._split_semantic_chunks(raw_text, chunk_size, overlap)
+            self.chunks = chunks
         else:
             # Original subtitle/transcript chunking logic
             paragraphs = [p.strip() for p in re.split(r"\n\s*\n", raw_text) if p.strip()]
@@ -90,7 +118,98 @@ class RetrievalMixin:
                 if current_chunk:
                     chunks.append(current_chunk)
 
-        self.chunks = chunks
+            self.chunks = chunks
+    
+    def _chunk_paragraph(self, paragraph_text: str, chunk_size: int, overlap: int, 
+                       section_title: str, section_index: int, paragraph_index: int) -> List[str]:
+        """Chunk a paragraph while preserving hierarchical metadata."""
+        chunks = []
+        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", paragraph_text) if s.strip()]
+        
+        if not sentences:
+            sentences = [paragraph_text]
+        
+        current_chunk = ""
+        for sentence in sentences:
+            candidate = (current_chunk + " " + sentence).strip() if current_chunk else sentence
+            
+            if len(candidate) <= chunk_size:
+                current_chunk = candidate
+            else:
+                if current_chunk:
+                    # Store chunk with metadata
+                    chunks.append(current_chunk)
+                    self._add_chunk_metadata(
+                        current_chunk, section_title, section_index, paragraph_index, len(chunks)
+                    )
+                    current_chunk = sentence
+                else:
+                    # Handle very long sentences
+                    current_chunk = sentence
+        
+        if current_chunk:
+            chunks.append(current_chunk)
+            self._add_chunk_metadata(
+                current_chunk, section_title, section_index, paragraph_index, len(chunks)
+            )
+        
+        return chunks
+    
+    def _add_chunk_metadata(self, chunk_text: str, section_title: str, section_index: int, 
+                           paragraph_index: int, chunk_index: int):
+        """Store hierarchical metadata for context reconstruction."""
+        metadata = {
+            'chunk_index': chunk_index,
+            'section_title': section_title,
+            'section_index': section_index,
+            'paragraph_index': paragraph_index,
+            'chunk_text': chunk_text,
+            'chunk_length': len(chunk_text),
+            'timestamp': time.time() if 'time' in globals() else 0
+        }
+        self.chunk_metadata.append(metadata)
+    
+    def _build_hierarchical_structure(self, text: str) -> Dict:
+        """Parse text into hierarchical document structure."""
+        structure = {
+            'document': text,
+            'sections': [],
+            'paragraphs': [],
+            'chunks': []
+        }
+        
+        # Split into sections (markdown headings)
+        sections = re.split(r'(?=^#{1,3}\s)', text, flags=re.MULTILINE)
+        sections = [s.strip() for s in sections if s.strip()]
+        
+        for section in sections:
+            # Extract section title and content
+            title_match = re.match(r'^#{1,3}\s+(.*?)$', section, re.MULTILINE)
+            section_title = title_match.group(1).strip() if title_match else "Untitled"
+            
+            # Get section content (remove title line)
+            section_content = re.sub(r'^#{1,3}\s+.*$', '', section, flags=re.MULTILINE).strip()
+            
+            # Split section into paragraphs
+            paragraphs = [p.strip() for p in re.split(r'\n\s*\n', section_content) if p.strip()]
+            
+            structure['sections'].append({
+                'title': section_title,
+                'content': section_content,
+                'paragraphs': paragraphs
+            })
+            
+            structure['paragraphs'].extend([
+                {
+                    'text': para,
+                    'section_title': section_title,
+                    'section_index': len(structure['sections']) - 1,
+                    'paragraph_index': i
+                }
+                for i, para in enumerate(paragraphs)
+            ])
+        
+        return structure
     
     def _split_semantic_chunks(self, text: str, chunk_size: int = 512, overlap: int = 100) -> List[str]:
         """Split text into semantic chunks based on sentences, paragraphs, and semantic boundaries."""
@@ -358,6 +477,10 @@ class RetrievalMixin:
         # Add contextual chunks if we found headings but not content
         filtered_chunks = self._add_contextual_chunks(query, filtered_chunks, combined_indices, combined_scores)
 
+        # Reconstruct context using hierarchical metadata
+        if hasattr(self, 'chunk_metadata') and self.chunk_metadata:
+            filtered_chunks = [self._reconstruct_context(chunk) for chunk in filtered_chunks]
+
         # Return top-k results
         return filtered_chunks[:k]
     
@@ -494,6 +617,21 @@ class RetrievalMixin:
         
         # Always return at least one chunk to avoid empty results
         return filtered_chunks if filtered_chunks else [scored_chunks[0][1]]
+    
+    def _reconstruct_context(self, chunk: str) -> str:
+        """Reconstruct broader context for a chunk using hierarchical metadata."""
+        if not self.chunk_metadata:
+            return chunk
+        
+        # Find metadata for this chunk
+        for meta in self.chunk_metadata:
+            if meta['chunk_text'] == chunk:
+                # Build context with section information
+                context = f"### {meta['section_title']}\n\n"
+                context += chunk
+                return context
+        
+        return chunk
 
     def _rerank_with_cross_encoder(self, query: str, chunks: List[str], top_k: int = 20) -> List[str]:
         """Rerank chunks using cross-encoder for better relevance."""

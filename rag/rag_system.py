@@ -33,6 +33,7 @@ class RAGSystem(RetrievalMixin, AnsweringMixin):
         self.index_file = index_file
         self.debug_retrieval = debug_retrieval
         self.last_retrieval_debug = []
+        self.chunk_metadata = []  # Store hierarchical metadata
         self._init_reranker()
 
     def _init_reranker(self):
