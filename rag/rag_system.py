@@ -141,7 +141,15 @@ class RAGSystem(RetrievalMixin, AnsweringMixin):
         else:
             # Add to existing index
             new_embeddings = np.array([chunk['embedding'] for chunk in chunks])
-            self.index.add(new_embeddings)
+            
+            # Ensure new embeddings have correct dimensions
+            if new_embeddings.shape[1] != self.index.d:
+                print(f"⚠️  Dimension mismatch: index expects {self.index.d}, got {new_embeddings.shape[1]}")
+                print("   Rebuilding index with new dimensions...")
+                self._rebuild_faiss_index()
+                self.index.add(new_embeddings)
+            else:
+                self.index.add(new_embeddings)
             
             # Update embeddings array
             if self.embeddings is not None:
