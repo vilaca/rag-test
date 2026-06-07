@@ -23,7 +23,14 @@ class RAGSystem(RetrievalMixin, AnsweringMixin):
         self.model_name = model_name
         # Use the specified model or default to NV-Embed-v2
         embedding_model_name = model_name if model_name else "nvidia/NV-Embed-v2"
-        self.embedding_model = SentenceTransformer(embedding_model_name)
+        
+        # Some models require trust_remote_code
+        trust_remote_code = "gte-large" in embedding_model_name.lower()
+        
+        self.embedding_model = SentenceTransformer(
+            embedding_model_name,
+            trust_remote_code=trust_remote_code
+        )
         self.chunks: List[str] = []
         self.embeddings = None
         self.index = None
