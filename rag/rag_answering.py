@@ -23,19 +23,19 @@ class AnsweringMixin:
         if question_type == "thematic":
             thematic_answer = self._generate_thematic_answer(query, context)
             if thematic_answer:
-                return thematic_answer
+                return self._post_process_answer(thematic_answer, query, context)
         
         # Handle meta questions differently
         if question_type == "meta":
             meta_answer = self._generate_meta_answer(query)
             if meta_answer:
-                return meta_answer
+                return self._post_process_answer(meta_answer, query, context)
 
         # Handle overview questions differently
         if question_type == "overview":
             overview_answer = self._generate_overview_answer(query, context)
             if overview_answer:
-                return overview_answer
+                return self._post_process_answer(overview_answer, query, context)
 
         # Try to synthesize the best answer from multiple context chunks
         try:
@@ -49,13 +49,78 @@ class AnsweringMixin:
                     # Try to enhance the definition answer
                     enhanced = self._enhance_definition_answer(best_answer, query, context)
                     if enhanced:
-                        return enhanced
-                return best_answer
+                        return self._post_process_answer(enhanced, query, context)
+                return self._post_process_answer(best_answer, query, context)
         except Exception as e:
             print(f"Answer synthesis failed: {e}")
 
         # If synthesis fails, fall back to simple extractive approach
-        return self._simple_extractive_answer(query, context)
+        fallback_answer = self._simple_extractive_answer(query, context)
+        return self._post_process_answer(fallback_answer, query, context)
+    
+    def _post_process_answer(self, answer: str, query: str, context: List[str]) -> str:
+        """Post-process answer for quality and reliability."""
+        if not answer or not answer.strip():
+            # Try to extract some relevant information from context
+            if context:
+                # Look for any sentence containing query keywords
+                query_keywords = self._query_keywords(query)
+                for chunk in context:
+                    chunk_lower = chunk.lower()
+                    if any(keyword in chunk_lower for keyword in query_keywords if len(keyword) > 3):
+                        # Extract a relevant sentence
+                        sentences = re.split(r"(?<=[.!?])\s+", chunk)
+                        for sentence in sentences:
+                            if len(sentence) > 20 and len(sentence) < 300:
+                                sentence_lower = sentence.lower()
+                                if any(keyword in sentence_lower for keyword in query_keywords if len(keyword) > 3):
+                                    return self._clean_answer(sentence)
+            return "I couldn't find any relevant information about that in the content."
+        
+        # Clean up the answer
+        answer = self._clean_answer(answer)
+        
+        # Add source attribution if possible
+        answer = self._add_source_attribution(answer, context)
+        
+        # Validate answer completeness
+        if self._is_unsatisfactory_answer(answer, query):
+            answer += " " + self._get_additional_context(query, context)
+        
+        return answer
+    
+    def _add_source_attribution(self, answer: str, context: List[str]) -> str:
+        """Add source attribution to the answer."""
+        # Find the most relevant context chunk
+        if context:
+            best_chunk = max(context, key=lambda x: len(x) if 50 < len(x) < 300 else 0)
+            if len(best_chunk) > 50:
+                # Extract a short citation
+                citation = best_chunk[:100] + "..." if len(best_chunk) > 100 else best_chunk
+                answer += f"\n\nSource: {citation}"
+        return answer
+    
+    def _get_additional_context(self, query: str, context: List[str]) -> str:
+        """Get additional context for incomplete answers."""
+        query_lower = query.lower()
+        additional_info = []
+        
+        for chunk in context[:3]:
+            if len(chunk) > 50 and len(chunk) < 300:
+                # Check if this chunk provides additional relevant information
+                chunk_lower = chunk.lower()
+                if any(term in chunk_lower for term in query_lower.split() if len(term) > 3):
+                    # Extract key sentences
+                    sentences = re.split(r"(?<=[.!?])\s+", chunk)
+                    for sentence in sentences:
+                        if 20 < len(sentence) < 150:
+                            additional_info.append(sentence.strip())
+                            if len(additional_info) >= 2:
+                                break
+        
+        if additional_info:
+            return "Additionally, " + ". ".join(additional_info) + "."
+        return "" 
 
     def _generate_thematic_answer(self, query: str, context: List[str]) -> str:
         """Generate answers for thematic questions about specific topics."""
@@ -457,6 +522,10 @@ class AnsweringMixin:
         keywords = self._query_keywords(query)
         query_lower = query.lower()
 
+        # Special handling for "explain" questions
+        if query_lower.startswith("explain "):
+            return self._handle_explanation_question(query, candidates, keywords)
+        
         # Special handling for "what is" questions
         if query_lower.startswith("what is") or query_lower.startswith("what are"):
             return self._handle_definition_question(query, candidates, keywords)
@@ -706,6 +775,91 @@ class AnsweringMixin:
                 return self._clean_answer(best_definition)
         
         # If no clear definition, fall back to general synthesis
+        # But first try to find any relevant sentence
+        for candidate in candidates:
+            candidate_lower = candidate.lower()
+            if main_keyword and re.search(rf"\b{re.escape(main_keyword)}\b", candidate_lower):
+                return self._clean_answer(candidate)
+        return ""
+
+    def _handle_explanation_question(self, query: str, candidates: List[str], keywords: set) -> str:
+        """Special handling for 'explain' questions."""
+        if not candidates:
+            return ""
+        
+        # For explanation questions, we want comprehensive answers
+        # Score candidates based on relevance and completeness
+        explanation_candidates = []
+        
+        # Get the main topic being explained
+        main_topic = ""
+        if "explain " in query.lower():
+            main_topic = query.lower().split("explain ", 1)[1].split()[0] if len(query.split()) > 1 else ""
+        
+        for candidate in candidates:
+            candidate_lower = candidate.lower()
+            score = 0.0
+            
+            # Check if candidate contains the main topic
+            if main_topic and re.search(rf"\b{re.escape(main_topic)}\b", candidate_lower):
+                score += 2.0
+            
+            # Check for explanation patterns
+            explanation_patterns = [
+                "states that", "means that", "refers to", "is the principle that",
+                "is the idea that", "explains that", "describes how", "works by",
+                "involves", "requires", "consists of", "includes",
+                "the following", "in other words", "essentially", "basically"
+            ]
+            
+            if any(pattern in candidate_lower for pattern in explanation_patterns):
+                score += 1.5
+            
+            # Prefer longer, more complete explanations
+            if 80 <= len(candidate) <= 250:
+                score += 1.0
+            elif len(candidate) > 250:
+                score += 0.5
+            
+            # Check for multiple sentences (better explanations)
+            sentence_count = candidate.count('.') + candidate.count('!') + candidate.count('?')
+            if sentence_count >= 2:
+                score += 0.8
+            elif sentence_count >= 1:
+                score += 0.4
+            
+            # Check for lists or enumerations (common in explanations)
+            if any(marker in candidate for marker in ['- ', '• ', '* ', '1. ', '2. ', '3. ']):
+                score += 0.5
+            
+            if score > 0:
+                explanation_candidates.append((score, candidate))
+        
+        if explanation_candidates:
+            # Sort by score and return the best explanation
+            explanation_candidates.sort(key=lambda x: x[0], reverse=True)
+            best_explanation = explanation_candidates[0][1]
+            
+            # Try to combine with additional relevant information
+            additional_info = []
+            for score, candidate in explanation_candidates[1:3]:  # Get 2nd and 3rd best
+                # Check if it adds new information
+                if len(set(candidate.lower().split()) & set(best_explanation.lower().split())) < len(candidate.split()) * 0.6:
+                    additional_info.append(candidate)
+                    if len(additional_info) >= 2:
+                        break
+            
+            if additional_info:
+                return self._clean_answer(f"{best_explanation} " + " ".join(additional_info))
+            else:
+                return self._clean_answer(best_explanation)
+        
+        # If no clear explanation found, return the most relevant sentence
+        for candidate in candidates:
+            candidate_lower = candidate.lower()
+            if main_topic and re.search(rf"\b{re.escape(main_topic)}\b", candidate_lower):
+                return self._clean_answer(candidate)
+        
         return ""
 
     def _no_clear_answer(self, query: str, context: List[str]) -> str:
@@ -871,6 +1025,13 @@ class AnsweringMixin:
             error_msg = f"Failed to analyze question type in _is_unsatisfactory_answer for question '{question}': {str(e)}\n{traceback.format_exc()}"
             print(error_msg)
             return True  # If we can't analyze the question, assume the answer is unsatisfactory
+        
+        # Special handling for explanation questions
+        if question_lower.startswith("explain "):
+            # For "explain" questions, be more lenient - any relevant content is better than nothing
+            if len(answer) > 50 and any(p in answer for p in ".!?"):
+                return False
+            return True
         
         # Special handling for definition questions
         if question_lower.startswith("what is") or question_lower.startswith("what are") or question_lower.startswith("define "):

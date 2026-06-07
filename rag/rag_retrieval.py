@@ -1,14 +1,16 @@
 """Retrieval and indexing mixin for the RAG system."""
 
 import re
-from typing import List
+from typing import List, Dict, Tuple
 
 import faiss
+import numpy as np
+from rank_bm25 import BM25Okapi
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 
 
 class RetrievalMixin:
-    def split_chunks(self, chunk_size: int = 512, overlap: int = 100):
+    def split_chunks(self, chunk_size: int = 512, overlap: int = 100, use_semantic_chunking: bool = True):
         """Split content into overlapping chunks for better context preservation."""
         if chunk_size <= 0:
             raise ValueError("chunk_size must be > 0")
@@ -23,6 +25,9 @@ class RetrievalMixin:
         # Check if this looks like a structured document with headings
         if self._is_structured_document(raw_text):
             chunks = self._split_structured_document(raw_text, chunk_size, overlap)
+        elif use_semantic_chunking:
+            # Semantic-aware chunking based on sentences and paragraphs
+            chunks = self._split_semantic_chunks(raw_text, chunk_size, overlap)
         else:
             # Original subtitle/transcript chunking logic
             paragraphs = [p.strip() for p in re.split(r"\n\s*\n", raw_text) if p.strip()]
@@ -86,6 +91,50 @@ class RetrievalMixin:
                     chunks.append(current_chunk)
 
         self.chunks = chunks
+    
+    def _split_semantic_chunks(self, text: str, chunk_size: int = 512, overlap: int = 100) -> List[str]:
+        """Split text into semantic chunks based on sentences and paragraphs."""
+        chunks = []
+        
+        # Split by paragraphs first
+        paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+        
+        for para in paragraphs:
+            # Split paragraph into sentences
+            sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", para) if s.strip()]
+            if not sentences:
+                sentences = [para]
+            
+            current_chunk = ""
+            for sentence in sentences:
+                # Try to keep complete sentences together
+                candidate = (current_chunk + " " + sentence).strip() if current_chunk else sentence
+                
+                if len(candidate) <= chunk_size:
+                    current_chunk = candidate
+                else:
+                    if current_chunk:
+                        chunks.append(current_chunk)
+                        current_chunk = sentence
+                    else:
+                        # Sentence is too long, split it
+                        words = sentence.split()
+                        current_chunk = ""
+                        for word in words:
+                            test_chunk = (current_chunk + " " + word).strip() if current_chunk else word
+                            if len(test_chunk) <= chunk_size:
+                                current_chunk = test_chunk
+                            else:
+                                chunks.append(current_chunk)
+                                current_chunk = word
+                        if current_chunk:
+                            chunks.append(current_chunk)
+                        current_chunk = ""
+            
+            if current_chunk:
+                chunks.append(current_chunk)
+        
+        return chunks
 
     def _is_structured_document(self, text: str) -> bool:
         """Check if text appears to be a structured document with headings."""
@@ -167,6 +216,14 @@ class RetrievalMixin:
         ).astype("float32")
         # Normalize for cosine-similarity style retrieval
         faiss.normalize_L2(self.embeddings)
+        
+        # Initialize BM25 for hybrid retrieval
+        self._initialize_bm25()
+    
+    def _initialize_bm25(self):
+        """Initialize BM25 for sparse retrieval."""
+        tokenized_chunks = [chunk.split() for chunk in self.chunks]
+        self.bm25 = BM25Okapi(tokenized_chunks)
 
     def build_index(self):
         """Build FAISS index for fast similarity search."""
@@ -203,24 +260,60 @@ class RetrievalMixin:
                 raise RuntimeError("Could not initialize any text generation model.")
 
     def retrieve(self, query: str, k: int = 12) -> List[str]:
-        """Retrieve top-k chunks relevant to the query."""
+        """Retrieve top-k chunks relevant to the query using hybrid retrieval."""
         self.last_retrieval_debug = []
         if not self.chunks or self.index is None:
             return []
 
         k = min(k, len(self.chunks))
+        
+        # Dense retrieval using FAISS
         query_embedding = self.embedding_model.encode([query], convert_to_numpy=True).astype("float32")
         faiss.normalize_L2(query_embedding)
-        scores, indices = self.index.search(query_embedding, k)
+        dense_scores, dense_indices = self.index.search(query_embedding, k)
+        
+        # Sparse retrieval using BM25
+        tokenized_query = query.split()
+        bm25_scores = self.bm25.get_scores(tokenized_query)
+        bm25_indices = np.argsort(bm25_scores)[::-1][:k]  # Top k from BM25
+        
+        # Combine results from both retrieval methods
+        combined_scores, combined_indices = self._combine_retrieval_results(
+            dense_scores, dense_indices, bm25_scores, bm25_indices, k
+        )
 
         # Apply keyword-based re-ranking to boost exact matches
-        ranked_chunks, debug_info = self._re_rank_with_keywords(query, scores, indices)
+        ranked_chunks, debug_info = self._re_rank_with_keywords(query, combined_scores, combined_indices)
         self.last_retrieval_debug = debug_info
 
+        # Filter out chunks that are not relevant to the query
+        ranked_chunks = self._filter_relevant_chunks(query, ranked_chunks)
+
         # Add contextual chunks if we found headings but not content
-        ranked_chunks = self._add_contextual_chunks(query, ranked_chunks, indices, scores)
+        ranked_chunks = self._add_contextual_chunks(query, ranked_chunks, combined_indices, combined_scores)
 
         return ranked_chunks
+    
+    def _combine_retrieval_results(self, dense_scores, dense_indices, bm25_scores, bm25_indices, k):
+        """Combine results from dense and sparse retrieval using reciprocal rank fusion."""
+        # Create a dictionary to store combined scores
+        combined_scores = {}
+        
+        # Add dense retrieval results
+        for i, idx in enumerate(dense_indices[0]):
+            if idx != -1:
+                combined_scores[idx] = combined_scores.get(idx, 0.0) + 1.0 / (i + 1)
+        
+        # Add BM25 results
+        for i, idx in enumerate(bm25_indices):
+            if idx != -1:
+                combined_scores[idx] = combined_scores.get(idx, 0.0) + 1.0 / (i + 1)
+        
+        # Sort by combined score
+        sorted_indices = sorted(combined_scores.keys(), key=lambda x: combined_scores[x], reverse=True)[:k]
+        sorted_scores = np.array([combined_scores[idx] for idx in sorted_indices])
+        
+        return sorted_scores.reshape(1, -1), np.array([sorted_indices])
 
     def _add_contextual_chunks(self, query: str, ranked_chunks: list, indices, scores) -> list:
         """Add neighboring chunks when headings are found but content is missing."""
@@ -276,6 +369,65 @@ class RetrievalMixin:
                 })
         
         return ranked_chunks
+
+    def _filter_relevant_chunks(self, query: str, chunks: List[str]) -> List[str]:
+        """Filter chunks to ensure they are relevant to the query."""
+        if not chunks or len(chunks) <= 1:
+            return chunks
+        
+        # Extract meaningful keywords from query (exclude stop words)
+        stop_words = {"the", "a", "an", "in", "on", "at", "to", "for", "of", "with", "by", "from", "as", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did", "will", "would", "could", "should", "explain", "describe", "what"}
+        query_keywords = [word.lower() for word in query.split() if word.lower() not in stop_words and len(word) > 2]
+        
+        if not query_keywords:
+            return chunks
+        
+        # For each chunk, calculate a relevance score
+        scored_chunks = []
+        for chunk in chunks:
+            chunk_lower = chunk.lower()
+            
+            # Count how many query keywords appear in the chunk
+            keyword_matches = sum(1 for keyword in query_keywords if keyword in chunk_lower)
+            
+            # Calculate relevance score (0-1)
+            relevance_score = keyword_matches / len(query_keywords)
+            
+            # Also check for related terms
+            related_score = 1.0 if self._contains_related_terms(chunk_lower, query_keywords) else 0.0
+            
+            # Combined score
+            final_score = relevance_score + (related_score * 0.3)
+            
+            scored_chunks.append((final_score, chunk))
+        
+        # Filter out low-relevance chunks and sort by relevance
+        min_relevance = 0.3  # Minimum relevance threshold
+        filtered_chunks = [chunk for score, chunk in scored_chunks if score >= min_relevance]
+        
+        # Sort by relevance (highest first)
+        filtered_chunks.sort(key=lambda x: next(score for score, chunk in scored_chunks if chunk == x), reverse=True)
+        
+        return filtered_chunks if filtered_chunks else chunks
+    
+    def _contains_related_terms(self, chunk: str, keywords: List[str]) -> bool:
+        """Check if chunk contains terms related to the keywords."""
+        # Simple synonym/related term checking
+        related_terms = {
+            "cap": ["consistency", "availability", "partition", "theorem"],
+            "theorem": ["principle", "law", "rule", "concept"],
+            "explain": ["describe", "definition", "means", "states"],
+            "distributed": ["system", "network", "nodes", "cluster"],
+            "system": ["architecture", "design", "model"]
+        }
+        
+        chunk_words = set(chunk.split())
+        for keyword in keywords:
+            if keyword in related_terms:
+                if any(term in chunk_words for term in related_terms[keyword]):
+                    return True
+        
+        return False
 
     def _re_rank_with_keywords(self, query: str, scores, indices) -> tuple:
         """Re-rank results using keyword matching to boost exact matches."""

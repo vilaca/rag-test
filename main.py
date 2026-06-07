@@ -38,6 +38,8 @@ def main():
         logger.info(f"  - Input files: {', '.join(args.files)}")
         logger.info(f"  - Embedding model: {args.embedding_model}")
         logger.info(f"  - Generation model: {args.model}")
+        logger.info(f"  - Hybrid retrieval: enabled")
+        logger.info(f"  - Semantic chunking: enabled")
         logger.info(f"  - Memory-mapped index: {'enabled' if args.mmap_index else 'disabled'}")
         logger.info(f"  - Debug retrieval: {'enabled' if args.debug_retrieval else 'disabled'}")
         if args.mmap_index:

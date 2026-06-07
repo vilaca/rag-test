@@ -13,7 +13,7 @@ class RAGSystem(RetrievalMixin, AnsweringMixin):
     def __init__(
         self,
         content_path: str,
-        model_name: str = "sentence-transformers/multi-qa-mpnet-base-dot-v1",
+        model_name: str = "BAAI/bge-large-en-v1.5",
         use_mmap_index: bool = False,
         index_file: str = "index.faiss",
         debug_retrieval: bool = False,
@@ -25,6 +25,7 @@ class RAGSystem(RetrievalMixin, AnsweringMixin):
         self.chunks: List[str] = []
         self.embeddings = None
         self.index = None
+        self.bm25 = None
         self.content = ""
         self.original_files = [content_path]
         self.use_mmap_index = use_mmap_index

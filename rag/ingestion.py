@@ -57,7 +57,7 @@ def initialize_rag_from_files(
     if not rag.content.strip():
         raise ValueError("Content is empty")
 
-    rag.split_chunks()
+    rag.split_chunks(use_semantic_chunking=True)
     rag.generate_embeddings()
     rag.build_index()
 
