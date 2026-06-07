@@ -28,7 +28,8 @@ class RAGSystem(RetrievalMixin, AnsweringMixin):
         embedding_model_name = model_name if model_name else "nvidia/NV-Embed-v2"
         
         # Some models require trust_remote_code
-        trust_remote_code = "gte-large" in embedding_model_name.lower()
+        trust_remote_code = ("gte-large" in embedding_model_name.lower() or 
+                           "nv-embed" in embedding_model_name.lower())
         
         self.embedding_model = SentenceTransformer(
             embedding_model_name,
