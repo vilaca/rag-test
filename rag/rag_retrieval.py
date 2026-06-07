@@ -403,6 +403,10 @@ class RetrievalMixin:
 
     def build_index(self):
         """Build FAISS index for fast similarity search."""
+        if self.embeddings is None or self.embeddings.size == 0:
+            print("⚠️  No embeddings available to build index")
+            return
+        
         dimension = self.embeddings.shape[1]
         # With normalized vectors, inner product ~= cosine similarity
         base_index = faiss.IndexFlatIP(dimension)
