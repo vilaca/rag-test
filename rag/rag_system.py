@@ -26,12 +26,28 @@ class RAGSystem(RetrievalMixin, AnsweringMixin):
         self.embeddings = None
         self.index = None
         self.bm25 = None
+        self.reranker = None
         self.content = ""
         self.original_files = [content_path]
         self.use_mmap_index = use_mmap_index
         self.index_file = index_file
         self.debug_retrieval = debug_retrieval
         self.last_retrieval_debug = []
+        self._init_reranker()
+
+    def _init_reranker(self):
+        """Initialize cross-encoder reranker if available."""
+        try:
+            from FlagEmbedding import FlagReranker
+            # Use a smaller reranker model that's more practical for CLI use
+            self.reranker = FlagReranker('BAAI/bge-reranker-base', use_fp16=False)
+            print("✅ Cross-encoder reranker initialized")
+        except ImportError:
+            print("⚠️  Cross-encoder reranker not available (install FlagEmbedding for better results)")
+            self.reranker = None
+        except Exception as e:
+            print(f"⚠️  Failed to initialize reranker: {e}")
+            self.reranker = None
 
         # Initialize Mistral/Devstral for generation
         self.generator = self.init_generator()

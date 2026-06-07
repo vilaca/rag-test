@@ -93,7 +93,7 @@ class RetrievalMixin:
         self.chunks = chunks
     
     def _split_semantic_chunks(self, text: str, chunk_size: int = 512, overlap: int = 100) -> List[str]:
-        """Split text into semantic chunks based on sentences and paragraphs."""
+        """Split text into semantic chunks based on sentences, paragraphs, and semantic boundaries."""
         chunks = []
         
         # Split by paragraphs first
@@ -105,6 +105,15 @@ class RetrievalMixin:
             if not sentences:
                 sentences = [para]
             
+            # Try embedding-based semantic chunking if we have embeddings available
+            if hasattr(self, 'embedding_model') and self.embedding_model and len(sentences) > 1:
+                try:
+                    chunks.extend(self._split_by_semantic_boundaries(sentences, chunk_size, overlap))
+                    continue
+                except Exception as e:
+                    print(f"⚠️  Semantic chunking failed, falling back to syntactic: {e}")
+            
+            # Fallback to syntactic chunking
             current_chunk = ""
             for sentence in sentences:
                 # Try to keep complete sentences together
@@ -133,6 +142,54 @@ class RetrievalMixin:
             
             if current_chunk:
                 chunks.append(current_chunk)
+        
+        return chunks
+    
+    def _split_by_semantic_boundaries(self, sentences: List[str], chunk_size: int, overlap: int) -> List[str]:
+        """Split sentences using semantic similarity to detect natural boundaries."""
+        if len(sentences) <= 1:
+            return sentences
+        
+        chunks = []
+        current_chunk = [sentences[0]]
+        
+        # Get embeddings for all sentences
+        try:
+            sentence_embeddings = self.embedding_model.encode(sentences, convert_to_numpy=True)
+        except Exception:
+            # Fallback to syntactic if embedding fails
+            return sentences
+        
+        for i in range(1, len(sentences)):
+            current_sentence = sentences[i]
+            current_embedding = sentence_embeddings[i]
+            
+            # Calculate similarity to previous sentence
+            if len(current_chunk) > 0:
+                prev_sentence = current_chunk[-1]
+                prev_embedding = sentence_embeddings[i-1]
+                
+                # Cosine similarity between current and previous sentence
+                similarity = np.dot(current_embedding, prev_embedding) / (
+                    np.linalg.norm(current_embedding) * np.linalg.norm(prev_embedding)
+                )
+                
+                # Check if current chunk would exceed size limit
+                candidate_chunk = " ".join(current_chunk + [current_sentence])
+                
+                # Detect semantic boundary (low similarity or size limit)
+                if similarity < 0.7 or len(candidate_chunk) > chunk_size:
+                    # End current chunk at semantic boundary
+                    chunks.append(" ".join(current_chunk))
+                    current_chunk = [current_sentence]
+                else:
+                    # Continue current chunk
+                    current_chunk.append(current_sentence)
+            else:
+                current_chunk.append(current_sentence)
+        
+        if current_chunk:
+            chunks.append(" ".join(current_chunk))
         
         return chunks
 
@@ -265,34 +322,44 @@ class RetrievalMixin:
         if not self.chunks or self.index is None:
             return []
 
-        k = min(k, len(self.chunks))
+        # Get more candidates initially for reranking (4x the requested k)
+        retrieval_k = min(k * 4, len(self.chunks))
         
         # Dense retrieval using FAISS
         query_embedding = self.embedding_model.encode([query], convert_to_numpy=True).astype("float32")
         faiss.normalize_L2(query_embedding)
-        dense_scores, dense_indices = self.index.search(query_embedding, k)
+        dense_scores, dense_indices = self.index.search(query_embedding, retrieval_k)
         
         # Sparse retrieval using BM25
         tokenized_query = query.split()
         bm25_scores = self.bm25.get_scores(tokenized_query)
-        bm25_indices = np.argsort(bm25_scores)[::-1][:k]  # Top k from BM25
+        bm25_indices = np.argsort(bm25_scores)[::-1][:retrieval_k]  # Top k from BM25
         
         # Combine results from both retrieval methods
         combined_scores, combined_indices = self._combine_retrieval_results(
-            dense_scores, dense_indices, bm25_scores, bm25_indices, k
+            dense_scores, dense_indices, bm25_scores, bm25_indices, retrieval_k
         )
 
-        # Apply keyword-based re-ranking to boost exact matches
-        ranked_chunks, debug_info = self._re_rank_with_keywords(query, combined_scores, combined_indices)
-        self.last_retrieval_debug = debug_info
+        # Get the combined chunks
+        all_chunks = [self.chunks[idx] for idx in combined_indices[0] if idx < len(self.chunks)]
+        
+        # Apply cross-encoder reranking if available (top 2x k)
+        if hasattr(self, 'reranker') and self.reranker and len(all_chunks) > 1:
+            reranked_chunks = self._rerank_with_cross_encoder(query, all_chunks, k * 2)
+        else:
+            # Fallback: apply keyword-based re-ranking
+            ranked_chunks, debug_info = self._re_rank_with_keywords(query, combined_scores, combined_indices)
+            self.last_retrieval_debug = debug_info
+            reranked_chunks = ranked_chunks[:k * 2]
 
-        # Filter out chunks that are not relevant to the query
-        ranked_chunks = self._filter_relevant_chunks(query, ranked_chunks)
+        # Filter out chunks that are not relevant to the query (using relative scoring)
+        filtered_chunks = self._filter_relevant_chunks(query, reranked_chunks)
 
         # Add contextual chunks if we found headings but not content
-        ranked_chunks = self._add_contextual_chunks(query, ranked_chunks, combined_indices, combined_scores)
+        filtered_chunks = self._add_contextual_chunks(query, filtered_chunks, combined_indices, combined_scores)
 
-        return ranked_chunks
+        # Return top-k results
+        return filtered_chunks[:k]
     
     def _combine_retrieval_results(self, dense_scores, dense_indices, bm25_scores, bm25_indices, k):
         """Combine results from dense and sparse retrieval using reciprocal rank fusion."""
@@ -401,15 +468,53 @@ class RetrievalMixin:
             
             scored_chunks.append((final_score, chunk))
         
-        # Filter out low-relevance chunks and sort by relevance
-        min_relevance = 0.3  # Minimum relevance threshold
-        filtered_chunks = [chunk for score, chunk in scored_chunks if score >= min_relevance]
+        # Sort by score (highest first)
+        scored_chunks.sort(key=lambda x: x[0], reverse=True)
         
-        # Sort by relevance (highest first)
-        filtered_chunks.sort(key=lambda x: next(score for score, chunk in scored_chunks if chunk == x), reverse=True)
+        # Use relative threshold instead of fixed
+        top_score = scored_chunks[0][0]
         
-        return filtered_chunks if filtered_chunks else chunks
-    
+        # Dynamic threshold based on query type and score distribution
+        query_lower = query.lower()
+        if any(query_lower.startswith(prefix) for prefix in ["explain ", "describe ", "what are "]):
+            # More lenient for broad questions (40% of top score)
+            threshold = top_score * 0.4
+        elif any(query_lower.startswith(prefix) for prefix in ["define ", "what is ", "who is "]):
+            # Stricter for specific questions (60% of top score)
+            threshold = top_score * 0.6
+        else:
+            # Default threshold (50% of top score)
+            threshold = top_score * 0.5
+        
+        # Ensure minimum reasonable threshold
+        threshold = max(0.2, threshold)
+        
+        # Filter chunks
+        filtered_chunks = [chunk for score, chunk in scored_chunks if score >= threshold]
+        
+        # Always return at least one chunk to avoid empty results
+        return filtered_chunks if filtered_chunks else [scored_chunks[0][1]]
+
+    def _rerank_with_cross_encoder(self, query: str, chunks: List[str], top_k: int = 20) -> List[str]:
+        """Rerank chunks using cross-encoder for better relevance."""
+        if not hasattr(self, 'reranker') or not self.reranker or not chunks:
+            return chunks[:top_k]  # Fallback to original order
+        
+        try:
+            # Create query-chunk pairs for reranking
+            pairs = [[query, chunk] for chunk in chunks]
+            
+            # Get reranker scores (higher is more relevant)
+            scores = self.reranker.compute_score(pairs)
+            
+            # Sort by reranker score and return top-k
+            ranked_chunks = [chunk for _, chunk in sorted(zip(scores, chunks), reverse=True, key=lambda x: x[0])]
+            return ranked_chunks[:top_k]
+            
+        except Exception as e:
+            print(f"⚠️  Reranking failed, falling back to original order: {e}")
+            return chunks[:top_k]
+
     def _contains_related_terms(self, chunk: str, keywords: List[str]) -> bool:
         """Check if chunk contains terms related to the keywords."""
         # Simple synonym/related term checking
