@@ -28,7 +28,7 @@ def repl(rag: RAGSystem):
 
             if getattr(rag, "debug_retrieval", False):
                 print_retrieval_debug(rag)
-            print(f"\nAnswer: {answer}\n")
+            print(f"\nQuestion: {query}\nAnswer: {answer}\n")
 
         except KeyboardInterrupt:
             print("\nExiting...")
