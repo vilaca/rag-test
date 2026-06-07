@@ -385,13 +385,27 @@ class RetrievalMixin:
 
     def generate_embeddings(self):
         """Generate embeddings for each chunk."""
-        self.embeddings = self.embedding_model.encode(
-            self.chunks,
-            show_progress_bar=True,
-            convert_to_numpy=True,
-        ).astype("float32")
-        # Normalize for cosine-similarity style retrieval
-        faiss.normalize_L2(self.embeddings)
+        if not self.chunks or len(self.chunks) == 0:
+            print("⚠️  No chunks available to generate embeddings")
+            self.embeddings = None
+            return
+        
+        if not hasattr(self, 'embedding_model') or self.embedding_model is None:
+            print("⚠️  Embedding model not initialized")
+            self.embeddings = None
+            return
+        
+        try:
+            self.embeddings = self.embedding_model.encode(
+                self.chunks,
+                show_progress_bar=True,
+                convert_to_numpy=True,
+            ).astype("float32")
+            # Normalize for cosine-similarity style retrieval
+            faiss.normalize_L2(self.embeddings)
+        except Exception as e:
+            print(f"⚠️  Failed to generate embeddings: {e}")
+            self.embeddings = None
         
         # Initialize BM25 for hybrid retrieval
         self._initialize_bm25()
