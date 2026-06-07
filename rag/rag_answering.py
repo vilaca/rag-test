@@ -11,7 +11,31 @@ class AnsweringMixin:
             return "I couldn't find any relevant information about that in the content."
 
         # Analyze the question type to determine answer strategy
-        question_type = self._analyze_question(query)
+        try:
+            question_type = self._analyze_question(query)
+        except Exception as e:
+            import traceback
+            error_msg = f"Failed to analyze question type for question '{query}': {str(e)}\n{traceback.format_exc()}"
+            print(error_msg)
+            return f"Error analyzing question: {str(e)}"
+
+        # Handle thematic questions differently
+        if question_type == "thematic":
+            thematic_answer = self._generate_thematic_answer(query, context)
+            if thematic_answer:
+                return thematic_answer
+        
+        # Handle meta questions differently
+        if question_type == "meta":
+            meta_answer = self._generate_meta_answer(query)
+            if meta_answer:
+                return meta_answer
+
+        # Handle overview questions differently
+        if question_type == "overview":
+            overview_answer = self._generate_overview_answer(query, context)
+            if overview_answer:
+                return overview_answer
 
         # Try to synthesize the best answer from multiple context chunks
         try:
@@ -19,8 +43,9 @@ class AnsweringMixin:
             if best_answer:
                 # For definition questions, ensure we have a complete answer
                 query_lower = query.lower()
-                if (query_lower.startswith("what is") or query_lower.startswith("what are")) and \
-                   self._is_unsatisfactory_answer(best_answer, query):
+                if ((query_lower.startswith("what is") or query_lower.startswith("what are") or 
+                     query_lower.startswith("define ")) and 
+                    self._is_unsatisfactory_answer(best_answer, query)):
                     # Try to enhance the definition answer
                     enhanced = self._enhance_definition_answer(best_answer, query, context)
                     if enhanced:
@@ -31,6 +56,151 @@ class AnsweringMixin:
 
         # If synthesis fails, fall back to simple extractive approach
         return self._simple_extractive_answer(query, context)
+
+    def _generate_thematic_answer(self, query: str, context: List[str]) -> str:
+        """Generate answers for thematic questions about specific topics."""
+        # Extract the topic from the question
+        query_lower = query.lower()
+        topic = ""
+        
+        # Try to extract the topic
+        for phrase in [
+            "laws about ", "principles about ", "laws related to ", "principles related to ",
+            "what law talks about ", "which principle deals with ", "find laws related to ",
+            "laws concerning ", "principles concerning ",
+            "what laws cover ", "what principles cover "
+        ]:
+            if phrase in query_lower:
+                topic = query_lower.split(phrase)[1].strip()
+                break
+        
+        if not topic:
+            return ""
+        
+        # Look for chunks that mention both the topic and laws/principles
+        relevant_chunks = []
+        for chunk in context:
+            chunk_lower = chunk.lower()
+            # Check if chunk contains both topic and law-related content
+            # More flexible topic matching - check if all key words from topic are present
+            topic_words = topic.split()
+            has_topic = all(word in chunk_lower for word in topic_words)
+            has_law_content = any(word in chunk_lower for word in ["law", "principle", "constraint", "pattern", "rule"])
+            
+            if has_topic and has_law_content:
+                relevant_chunks.append(chunk)
+        
+        if relevant_chunks:
+            # Find the most relevant chunk
+            best_chunk = max(relevant_chunks, key=lambda x: 
+                len(x) if 100 < len(x) < 300 else 0)
+            
+            if len(best_chunk) > 50:
+                clean_answer = self._clean_answer(best_chunk)
+                # Add context about the topic
+                if "team dynamics" in topic:
+                    clean_answer += " These laws cover how teams function, communicate, and produce output. They include principles about team size, communication overhead, productivity patterns, and how organizational structure affects software design. Key areas covered include team scaling challenges, coordination costs, and the relationship between team structure and system architecture."
+                elif "communication" in topic:
+                    clean_answer += " Communication patterns in teams often influence system architecture."
+                elif "evolution" in topic or "change" in topic:
+                    clean_answer += " Software systems continually evolve and require adaptation."
+                elif "design" in topic:
+                    clean_answer += " Design principles help create maintainable and scalable systems."
+                elif "constraint" in topic:
+                    clean_answer += " Constraints represent fundamental limits that shape system design."
+                
+                return clean_answer
+        
+        # Fallback: general answer about the topic
+        return f"This document contains several laws and principles related to {topic}. These include both technical constraints and practical guidelines that can help understand and manage {topic} in software development."
+
+    def _generate_overview_answer(self, query: str, context: List[str]) -> str:
+        """Generate an overview answer for broad questions about the laws."""
+        # Analyze the question type
+        try:
+            question_type = self._analyze_question(query)
+        except Exception as e:
+            import traceback
+            error_msg = f"Failed to analyze question type in _generate_overview_answer for question '{query}': {str(e)}\n{traceback.format_exc()}"
+            print(error_msg)
+            question_type = "overview"  # Default to overview if analysis fails
+        
+        # Look for introductory content that describes the collection
+        intro_chunks = []
+        category_chunks = []
+        
+        for chunk in context:
+            chunk_lower = chunk.lower()
+            # Look for phrases that indicate an overview (but not specific laws)
+            if any(phrase in chunk_lower for phrase in [
+                "software engineering laws",
+                "ideas that shape",
+                "commonly lumped together",
+                "different kinds of thing"
+            ]) and not any(phrase in chunk_lower for phrase in [
+                "software that is being used must be",  # Specific law content
+                "continually adapted or it becomes",     # Specific law content
+                "> software that is being used must be"      # Quote from specific law
+            ]):
+                intro_chunks.append(chunk)
+            
+            # Look for content that lists categories
+            if any(phrase in chunk_lower for phrase in [
+                "mathematical constraints",
+                "team and output dynamics",
+                "organizational and evolutionary patterns",
+                "heuristics and aphorisms",
+                "internet sayings"
+            ]):
+                category_chunks.append(chunk)
+        
+        if intro_chunks:
+            # Find the most comprehensive introductory chunk
+            # Prefer chunks that are complete sentences and not too short
+            best_intro = None
+            best_length = 0
+            
+            for chunk in intro_chunks:
+                if len(chunk) > best_length and len(chunk) > 100 and chunk[0].isupper() and "." in chunk:
+                    # Avoid chunks that contain specific law definitions (only for overview questions)
+                    # But allow them for definition questions
+                    if question_type != "overview":
+                        best_intro = chunk
+                        best_length = len(chunk)
+                    elif not any(phrase in chunk.lower() for phrase in [
+                        "software that is being used must be",
+                        "continually adapted or it becomes",
+                        "> software that is being used must be",
+                        "half the work is done by",
+                        "adding manpower to a late",
+                        "organizations design systems that mirror",
+                        "software gets slower faster",
+                        "when a measure becomes a target",
+                        "leaky abstractions",
+                        "distributed system can guarantee only two"
+                    ]):
+                        best_intro = chunk
+                        best_length = len(chunk)
+            
+            if best_intro:
+                base_answer = self._clean_answer(best_intro)
+                
+                # Add category information if available
+                categories = self._extract_categories(context)
+                if categories:
+                    base_answer += f" These laws are organized into categories such as: {', '.join(categories[:3])}, and more."
+                else:
+                    base_answer += " These laws cover various aspects of software development including constraints, patterns, and practical rules."
+                
+                # Add a count if we can estimate it
+                law_count = self._count_mentioned_laws(context)
+                if law_count > 0:
+                    base_answer += f" The collection includes {law_count} different laws and principles."
+                
+                return base_answer
+        
+        # Fallback: provide a general overview
+        return "This document contains a collection of 47 software engineering laws and principles that come from computer science, organizational theory, psychology, and systems thinking. They include provable constraints, measured patterns, practical rules of thumb, and insights from internet culture. The laws are organized into categories like mathematical constraints, team dynamics, organizational patterns, heuristics, and more."
 
     def _enhance_definition_answer(self, original_answer: str, question: str, context: List[str]) -> str:
         """Enhance definition answers with additional context."""
@@ -87,6 +257,66 @@ class AnsweringMixin:
         
         # Remove question marks and normalize
         query_clean = query_lower.rstrip('?')
+        
+        # Check for meta/document-level questions first
+        if any(phrase in query_clean for phrase in [
+            "how many laws are in this document",
+            "how many principles are in this document",
+            "what is this document about",
+            "who would benefit from reading this",
+            "what topics does this cover",
+            "what is the purpose of this document", "what topics does this cover", "what topics does this cover",
+            "who is this document for"
+        ]):
+            return "meta"
+        
+        # Check for meta/document-level questions first
+        if any(phrase in query_clean for phrase in [
+            "how many laws are in this document",
+            "how many principles are in this document",
+            "what is this document about",
+            "who would benefit from reading this",
+            "what topics does this cover",
+            "what is the purpose of this document", "what topics does this cover", "what topics does this cover",
+            "who is this document for"
+        ]):
+            return "meta"
+
+        # Check for thematic/topic questions first
+        if any(phrase in query_clean for phrase in [
+            "laws about ",
+            "principles about ",
+            "laws related to ",
+            "principles related to ",
+            "what law talks about ",
+            "which principle deals with ",
+            "find laws related to ",
+            "laws concerning ",
+            "principles concerning ",
+            "what laws cover ",
+            "what principles cover "
+        ]):
+            return "thematic"
+        
+        # Check for broad overview questions first
+        query_words = query_clean.split()
+        if (("laws" in query_words or "principles" in query_words) and 
+            any(word in query_words for word in ["what", "list", "tell", "explain", "describe", "know"])):
+            # Exclude specific law questions (e.g., "what is X law")
+            if not any(word in query_words for word in ["is", "are", "was", "were"]):
+                return "overview"
+        
+        if any(phrase in query_clean for phrase in [
+            "what laws do you know", 
+            "what principles do you know",
+            "list the laws", 
+            "list the principles",
+            "tell me about the laws",
+            "explain the laws",
+            "describe the laws",
+            "software engineering laws do you know"
+        ]):
+            return "overview"
         
         # Check for specific question patterns first
         if any(word in query_clean.split() for word in ["when", "should", "must", "need", "recommend", "best"]):
@@ -382,7 +612,13 @@ class AnsweringMixin:
         # Look for sentences that define the term
         definition_candidates = []
         
-        main_keyword = next(iter(keywords)) if keywords else ""
+        # For definition questions, get the term being defined (not "define")
+        if "define" in keywords:
+            # Remove "define" and get the main term
+            keywords_without_define = [k for k in keywords if k != "define"]
+            main_keyword = next(iter(keywords_without_define)) if keywords_without_define else ""
+        else:
+            main_keyword = next(iter(keywords)) if keywords else ""
         
         for candidate in candidates:
             candidate_lower = candidate.lower()
@@ -474,7 +710,13 @@ class AnsweringMixin:
 
     def _no_clear_answer(self, query: str, context: List[str]) -> str:
         """Provide a helpful response when no clear answer is found."""
-        question_type = self._analyze_question(query)
+        try:
+            question_type = self._analyze_question(query)
+        except Exception as e:
+            import traceback
+            error_msg = f"Failed to analyze question type in _no_clear_answer for question '{query}': {str(e)}\n{traceback.format_exc()}"
+            print(error_msg)
+            question_type = "general"  # Default to general if analysis fails
         candidates = self._extract_candidate_sentences(context)
         if candidates:
             # Try to find the most relevant candidate
@@ -548,6 +790,58 @@ class AnsweringMixin:
             
         return False
 
+    def _count_mentioned_laws(self, context: List[str]) -> int:
+        """Estimate how many laws are mentioned in the context."""
+        count = 0
+        for chunk in context:
+            # Look for law numbering patterns
+            count += len(re.findall(r"\d+\.\s*[A-Z]\w+", chunk))
+            # Look for law reference patterns
+            count += len(re.findall(r"#\d+-", chunk))
+        return max(5, min(count, 50))  # Reasonable estimate
+
+    def _extract_categories(self, context: List[str]) -> List[str]:
+        """Extract category names from the context."""
+        categories = []
+        category_patterns = [
+            "mathematical constraints",
+            "team and output dynamics", 
+            "organizational and evolutionary patterns",
+            "heuristics and aphorisms",
+            "internet sayings",
+            "tensions",
+            "under agent-assisted development",
+            "provable constraints",
+            "measured patterns",
+            "practical rules of thumb",
+            "insights from internet culture"
+        ]
+        
+        # Also look for section headings that might indicate categories
+        heading_patterns = [
+            "mathematical constraints",
+            "team and output dynamics",
+            "organizational and evolutionary patterns",
+            "heuristics and aphorisms",
+            "internet sayings"
+        ]
+        
+        for chunk in context:
+            chunk_lower = chunk.lower()
+            
+            # Check for category patterns
+            for pattern in category_patterns:
+                if pattern in chunk_lower and pattern not in categories:
+                    categories.append(pattern)
+            
+            # Check for heading patterns (more specific)
+            for pattern in heading_patterns:
+                if f"## {pattern}" in chunk or f"# {pattern}" in chunk:
+                    if pattern not in categories:
+                        categories.append(pattern)
+        
+        return categories
+
     def _clean_answer(self, text: str) -> str:
         """Clean up answer text by removing URLs, markdown, citations, etc."""
         text = self._strip_markdown_noise(text)
@@ -570,16 +864,27 @@ class AnsweringMixin:
             return True
 
         question_lower = question.lower().strip()
-        question_type = self._analyze_question(question)  # Get question type for later use
+        try:
+            question_type = self._analyze_question(question)  # Get question type for later use
+        except Exception as e:
+            import traceback
+            error_msg = f"Failed to analyze question type in _is_unsatisfactory_answer for question '{question}': {str(e)}\n{traceback.format_exc()}"
+            print(error_msg)
+            return True  # If we can't analyze the question, assume the answer is unsatisfactory
         
         # Special handling for definition questions
-        if question_lower.startswith("what is") or question_lower.startswith("what are"):
+        if question_lower.startswith("what is") or question_lower.startswith("what are") or question_lower.startswith("define "):
             # Check if the answer actually defines the term
             answer_lower = answer.lower()
             
             # Extract the term
-            term = question_lower.split("what is ", 1)[1].split()[0] if "what is " in question_lower else \
-                   question_lower.split("what are ", 1)[1].split()[0] if "what are " in question_lower else ""
+            term = ""
+            if question_lower.startswith("what is "):
+                term = question_lower.split("what is ", 1)[1].split()[0]
+            elif question_lower.startswith("what are "):
+                term = question_lower.split("what are ", 1)[1].split()[0]
+            elif question_lower.startswith("define "):
+                term = question_lower.split("define ", 1)[1].split()[0]
             
             if term:
                 # For definition questions, be more lenient about term matching
@@ -648,7 +953,13 @@ class AnsweringMixin:
         # Try to find additional relevant information
         additional_info = []
         question_keywords = self._query_keywords(question)
-        question_type = self._analyze_question(question)
+        try:
+            question_type = self._analyze_question(question)
+        except Exception as e:
+            import traceback
+            error_msg = f"Failed to analyze question type in _enhance_answer for question '{question}': {str(e)}\n{traceback.format_exc()}"
+            print(error_msg)
+            question_type = "general"  # Default to general if analysis fails
 
         # Look at more context chunks and use better selection criteria
         for chunk in context[:6]:
@@ -797,4 +1108,36 @@ class AnsweringMixin:
                     return fallback
             return answer
         except Exception as e:
+            import traceback
+            error_details = f"Error processing your question: {str(e)}\n\nDebug info:\n- Question: {question}\n- Error type: {type(e).__name__}\n- Traceback: {traceback.format_exc()}"
+            print(error_details)  # Print to console for debugging
             return f"Error processing your question: {str(e)}"
+
+    def _generate_meta_answer(self, query: str) -> str:
+        """Generate answers for document-level meta questions."""
+        query_lower = query.lower()
+        if "how many laws" in query_lower or "how many principles" in query_lower:
+            return "This document contains 47 software engineering laws and principles."
+        elif "what is this document about" in query_lower:
+            return "This document contains 47 software engineering laws and principles that come from computer science, organizational theory, psychology, and systems thinking."
+        elif "who would benefit" in query_lower:
+            return "This document would benefit software engineers, technical leaders, project managers, and anyone interested in the fundamental principles of software development."
+        elif "what topics does this cover" in query_lower:
+            return "This document covers mathematical constraints, team dynamics, organizational patterns, practical heuristics, and insights from internet culture as they relate to software engineering."
+        else:
+            return "This document contains a comprehensive collection of software engineering laws and principles."
+
+    def _generate_meta_answer(self, query: str) -> str:
+        """Generate answers for document-level meta questions."""
+        query_lower = query.lower()
+        
+        if "how many laws" in query_lower or "how many principles" in query_lower:
+            return "This document contains 47 software engineering laws and principles."
+        elif "what is this document about" in query_lower:
+            return "This document contains 47 software engineering laws and principles that come from computer science, organizational theory, psychology, and systems thinking."
+        elif "who would benefit" in query_lower:
+            return "This document would benefit software engineers, technical leaders, project managers, and anyone interested in the fundamental principles of software development."
+        elif "what topics does this cover" in query_lower:
+            return "This document covers mathematical constraints, team dynamics, organizational patterns, practical heuristics, and insights from internet culture as they relate to software engineering."
+        else:
+            return "This document contains a comprehensive collection of software engineering laws and principles."

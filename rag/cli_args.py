@@ -5,8 +5,8 @@ import argparse
 
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments for the RAG application."""
-    parser = argparse.ArgumentParser(description="RAG System for YouTube Subtitles")
-    parser.add_argument("subtitles", nargs="+", type=str, help="Path(s) to the subtitles file(s)")
+    parser = argparse.ArgumentParser(description="RAG System for Text Files")
+    parser.add_argument("files", nargs="+", type=str, help="Path(s) to the text file(s)")
     parser.add_argument(
         "--model",
         type=str,

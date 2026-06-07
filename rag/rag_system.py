@@ -4,29 +4,29 @@ from typing import List
 
 from sentence_transformers import SentenceTransformer
 
-from rag_answering import AnsweringMixin
-from rag_debug import print_retrieval_debug
-from rag_retrieval import RetrievalMixin
+from rag.rag_answering import AnsweringMixin
+from rag.rag_debug import print_retrieval_debug
+from rag.rag_retrieval import RetrievalMixin
 
 
 class RAGSystem(RetrievalMixin, AnsweringMixin):
     def __init__(
         self,
-        subtitles_path: str,
+        content_path: str,
         model_name: str = "sentence-transformers/multi-qa-mpnet-base-dot-v1",
         use_mmap_index: bool = False,
         index_file: str = "index.faiss",
         debug_retrieval: bool = False,
     ):
-        """Initialize the RAG system with subtitles and embedding model."""
-        self.subtitles_path = subtitles_path
+        """Initialize the RAG system with content and embedding model."""
+        self.content_path = content_path
         self.model_name = model_name
         self.embedding_model = SentenceTransformer(model_name)
         self.chunks: List[str] = []
         self.embeddings = None
         self.index = None
-        self.subtitles = ""
-        self.original_files = [subtitles_path]
+        self.content = ""
+        self.original_files = [content_path]
         self.use_mmap_index = use_mmap_index
         self.index_file = index_file
         self.debug_retrieval = debug_retrieval
@@ -35,10 +35,10 @@ class RAGSystem(RetrievalMixin, AnsweringMixin):
         # Initialize Mistral/Devstral for generation
         self.generator = self.init_generator()
 
-    def load_subtitles(self):
-        """Load subtitles from a file with validation."""
+    def load_content(self):
+        """Load content from a file with validation."""
         try:
-            with open(self.subtitles_path, "r", encoding="utf-8") as f:
+            with open(self.content_path, "r", encoding="utf-8") as f:
                 content = f.read()
 
             if not content.strip():
@@ -47,18 +47,18 @@ class RAGSystem(RetrievalMixin, AnsweringMixin):
             if len(content) < 100:
                 print("Warning: Input file is very small (< 100 characters)")
 
-            self.subtitles = content
+            self.content = content
         except UnicodeDecodeError:
             # Try with different encoding if UTF-8 fails
-            with open(self.subtitles_path, "r", encoding="latin-1") as f:
+            with open(self.content_path, "r", encoding="latin-1") as f:
                 content = f.read()
-            self.subtitles = content
+            self.content = content
         except Exception as e:
-            raise RuntimeError(f"Failed to load subtitles file: {str(e)}")
+            raise RuntimeError(f"Failed to load content file: {str(e)}")
 
         # Validate the content
-        if not self.subtitles.strip():
-            raise ValueError("Subtitles content is empty")
+        if not self.content.strip():
+            raise ValueError("Content is empty")
 
 
 __all__ = ["RAGSystem", "print_retrieval_debug"]

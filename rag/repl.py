@@ -1,6 +1,6 @@
 """Interactive REPL for querying the RAG system."""
 
-from rag_system import RAGSystem, print_retrieval_debug
+from rag.rag_system import RAGSystem, print_retrieval_debug
 
 
 def repl(rag: RAGSystem):
@@ -11,11 +11,11 @@ def repl(rag: RAGSystem):
             f"Loaded {len(rag.chunks)} chunks from {len(rag.original_files)} files: {', '.join(rag.original_files)}"
         )
     else:
-        print(f"Loaded {len(rag.chunks)} chunks from '{rag.subtitles_path}'")
+        print(f"Loaded {len(rag.chunks)} chunks from '{rag.content_path}'")
 
     while True:
         try:
-            query = input(">>> ")
+            query = input("\n>>> ")
             if query.lower() == "exit":
                 break
 

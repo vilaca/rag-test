@@ -9,7 +9,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 
 class RetrievalMixin:
     def split_chunks(self, chunk_size: int = 512, overlap: int = 100):
-        """Split subtitles into overlapping chunks for better context preservation."""
+        """Split content into overlapping chunks for better context preservation."""
         if chunk_size <= 0:
             raise ValueError("chunk_size must be > 0")
         if overlap < 0:
@@ -18,7 +18,7 @@ class RetrievalMixin:
             overlap = max(0, chunk_size // 5)
 
         # Keep paragraph structure first (don't collapse newlines too early)
-        raw_text = self.subtitles.replace("\r\n", "\n").replace("\r", "\n")
+        raw_text = self.content.replace("\r\n", "\n").replace("\r", "\n")
         
         # Check if this looks like a structured document with headings
         if self._is_structured_document(raw_text):
@@ -302,6 +302,17 @@ class RetrievalMixin:
         
         # Also add single key words
         key_words = [word for word in words if word not in stop_words and len(word) > 3]
+        
+        # Add synonyms for common question words
+        # Map "define" to the actual term being defined
+        if "define" in query_lower:
+            # Find what's being defined
+            for i, word in enumerate(words):
+                if word == "define" and i + 1 < len(words):
+                    defined_term = words[i + 1]
+                    if defined_term.lower() not in stop_words:
+                        key_words.append(defined_term)
+                        break
         
         # Combine and deduplicate
         key_terms = list(set(key_phrases + key_words))
