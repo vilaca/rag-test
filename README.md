@@ -1,20 +1,24 @@
-# RAG Test
+# RAG Test CLI
 
-This project is a simple **RAG (Retrieval-Augmented Generation)** CLI that:
+A lightweight **Retrieval-Augmented Generation (RAG)** command-line app for asking questions over one or more local text files.
 
-1. Loads one or more text files
-2. Splits it into chunks
-3. Builds embeddings + a FAISS index
-4. Lets you ask questions in a terminal REPL
+It:
+- loads input `.txt` files,
+- splits them into overlapping chunks,
+- generates embeddings with `sentence-transformers`,
+- builds a FAISS similarity index,
+- and answers questions interactively in a REPL.
+
+---
 
 ## Requirements
 
-- Python 3.9+
-- Internet connection (first run downloads models from Hugging Face)
+- Python **3.9+**
+- Internet connection on first run (to download Hugging Face models)
+
+---
 
 ## Setup
-
-Create and activate a virtual environment, then install dependencies.
 
 ```bash
 python3 -m venv .venv
@@ -23,61 +27,78 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-> Note: `main.py` also tries to install missing runtime packages automatically (`faiss-cpu`, `sentence-transformers`, `transformers`, `torch`) if they are not already installed.
+---
 
-## Run
+## Quick Start
 
-Use `main.py` and pass one or more text file paths.
-
-Full command example using all files in `dataset/`:
+Run the CLI with one or more text files:
 
 ```bash
-python3 main.py dataset/muffin.txt dataset/muffin-2.txt dataset/muffin-3.txt dataset/muffin-4.txt dataset/muffin-5.txt
+python3 main.py ./notes.txt
 ```
 
-You will enter an interactive prompt:
+or
+
+```bash
+python3 main.py ./doc1.txt ./doc2.txt ./doc3.txt
+```
+
+Then ask questions in the prompt:
 
 ```text
-RAG System REPL. Type 'exit' to quit.
->>> what is this text about?
-
->>> When to use sunscreen?
-Answer: Use sunscreen every day on exposed skin during daylight. Apply as the last skincare step before makeup, ideally 15 minutes before sun exposure.
-
->>> Is sunscreen necessary if it is cloudy?
-Answer: Yes. Use sunscreen even when it's cloudy—UVA still reaches skin through clouds. Apply in the morning, then reapply about every 2 hours when outdoors, and after swimming, sweating, or towel-drying.
+>>> what is the main topic?
+>>> summarize the key points
+>>> exit
 ```
 
-Type `exit` to quit.
+Type `exit` (or press `Ctrl+C`) to quit.
 
-### Command-Line Arguments
+---
 
-- **`input_files`** (required): One or more paths to input text files.
-  Example: `python3 main.py /path/to/file1.txt /path/to/file2.txt`
-
-- **`--model`** (optional): Text generation model to use.
-  Default: `gpt2`
-  Example: `python3 main.py dataset/muffin.txt --model distilgpt2`
-
-- **`--embedding-model`** (optional): Embedding model for vector search.
-  Default: `sentence-transformers/all-MiniLM-L6-v2`
-  Example: `python3 main.py dataset/muffin.txt --embedding-model sentence-transformers/all-mpnet-base-v2`
-
-## Using your own file(s)
-
-Run with any `.txt` file(s):
+## Command-Line Options
 
 ```bash
-python3 main.py /path/to/your/text1.txt /path/to/your/text2.txt
+python3 main.py <file1.txt> [file2.txt ...] [options]
 ```
 
-## Dataset
+### Positional arguments
+- `subtitles` (required): one or more input text file paths.
 
-The dataset used in this repository is taken from the YouTube channel **Lab Muffin Beauty Science**:
-https://www.youtube.com/@LabMuffinBeautyScience/videos
+### Optional arguments
+- `--model <model_id>`
+  - Text generation model (default: `distilgpt2`).
+- `--embedding-model <model_id>`
+  - Embedding model (default: `sentence-transformers/all-MiniLM-L6-v2`).
+- `--mmap-index`
+  - Memory-map the FAISS index from disk to reduce RAM usage.
+- `--index-file <path>`
+  - FAISS index path when using `--mmap-index` (default: `index.faiss`).
+- `--debug-retrieval`
+  - Print retrieved chunks and FAISS scores per query.
+
+### Example with options
+
+```bash
+python3 main.py ./dataset.txt \
+  --embedding-model sentence-transformers/all-MiniLM-L6-v2 \
+  --model distilgpt2 \
+  --debug-retrieval
+```
+
+---
 
 ## Notes
 
-- The app attempts to load `mistralai/Mistral-7B-Instruct-v0.1` for generation.
-- If that fails, it falls back to `distilgpt2`.
-- First run can take a while due to model downloads.
+- Empty files are skipped with a warning.
+- If all provided files are empty, initialization fails.
+- UTF-8 is used by default, with a latin-1 fallback for reading files.
+
+---
+
+## Dependencies
+
+Defined in `requirements.txt`:
+- `torch`
+- `transformers`
+- `sentence-transformers`
+- `faiss-cpu`
