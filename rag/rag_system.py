@@ -24,8 +24,8 @@ class RAGSystem(RetrievalMixin, AnsweringMixin):
         """Initialize the RAG system with content and embedding model."""
         self.content_path = content_path
         self.model_name = model_name
-        # Use the specified model or default to a smaller high-quality alternative
-        embedding_model_name = model_name if model_name else "BAAI/bge-large-en-v1.5"
+        # Use the specified model or default to gte-large-en-v1.5
+        embedding_model_name = model_name if model_name else "Alibaba-NLP/gte-large-en-v1.5"
         
         # Some models require trust_remote_code
         trust_remote_code = ("gte-large" in embedding_model_name.lower() or 

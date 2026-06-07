@@ -12,9 +12,9 @@ The system uses an enhanced RAG architecture with the following components:
 - **Combined Results**: Reciprocal Rank Fusion for optimal coverage
 
 ### 2. **Advanced Embedding Models**
-- **Default**: `BAAI/bge-large-en-v1.5` (excellent balance of quality and size)
+- **Default**: `Alibaba-NLP/gte-large-en-v1.5` (excellent general-purpose, 1.3GB)
+- **Alternative**: `BAAI/bge-large-en-v1.5` (excellent balance of quality and size)
 - **Alternative**: `nvidia/NV-Embed-v2` (state-of-the-art, but large - 1.5GB)
-- **Alternative**: `Alibaba-NLP/gte-large-en-v1.5` (excellent general-purpose)
 - **Fallback**: `sentence-transformers/multi-qa-mpnet-base-dot-v1` (compatibility)
 
 ### 3. **Hierarchical Chunking**

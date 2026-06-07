@@ -16,8 +16,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--embedding-model",
         type=str,
-        default="nvidia/NV-Embed-v2",
-        help="Embedding model to use (default: nvidia/NV-Embed-v2)",
+        default="Alibaba-NLP/gte-large-en-v1.5",
+        help="Embedding model to use (default: Alibaba-NLP/gte-large-en-v1.5)",
     )
     parser.add_argument(
         "--mmap-index",
