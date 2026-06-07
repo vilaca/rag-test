@@ -698,9 +698,9 @@ class AnsweringMixin:
             if max_score > 5.0:
                 threshold = max(2.0, max_score * 0.4)
             else:
-                threshold = max(1.0, max_score * 0.6)
+                threshold = max(0.7, max_score * 0.4)  # More lenient threshold
         else:
-            threshold = 1.0
+            threshold = 0.7  # More lenient threshold
             
         top = [s for sc, s in scored[:15] if sc >= threshold]
         if not top:
@@ -1308,12 +1308,29 @@ class AnsweringMixin:
 
     def _suggest_related_topics(self, question: str) -> str:
         """Fallback when retrieval finds no relevant chunks."""
-        keywords = re.findall(r"\b[a-zA-Z]{4,}\b", question.lower())
-        hint = f" around '{keywords[0]}'" if keywords else ""
-        return (
-            "I couldn't find relevant passages for that question"
-            f"{hint}. Try using exact terms from the transcript or ask a narrower question."
-        )
+        # Extract meaningful keywords, including acronyms and technical terms
+        keywords = self._extract_keywords(question.lower())
+        
+        # Filter out common question words and focus on content words
+        content_keywords = [kw for kw in keywords if kw not in 
+                          {'explain', 'define', 'what', 'how', 'why', 'when', 'where', 'which', 'tell', 'give', 'provide', 'describe'}]
+        
+        # If we have content keywords, use them for suggestions
+        if content_keywords:
+            hint = f" about '{', '.join(content_keywords[:3])}'"
+            suggestions = []
+            # Provide specific suggestions based on question type
+            if any(word in question.lower() for word in ['explain', 'define', 'what is']):
+                suggestions.append("Try asking about specific aspects or examples")
+            elif any(word in question.lower() for word in ['how', 'why']):
+                suggestions.append("Try asking about the principles or applications")
+            
+            suggestion_text = "; ".join(suggestions) + "." if suggestions else "Try using more specific terms."
+            return (
+                f"I couldn't find relevant information{hint}. {suggestion_text}"
+            )
+        else:
+            return "I couldn't find relevant information about that topic. Try asking a more specific question."
 
     def query(self, question: str) -> str:
         """Answer a question using the RAG system with error handling."""
@@ -1333,8 +1350,11 @@ class AnsweringMixin:
         is_question = q_lower.endswith("?") or has_question_word
 
         if not is_question and not q_lower.endswith("?"):
-            # Try to convert statement to question
-            question = question.strip() + "?"
+            # Try to convert statement to question, but don't add ? if it has clear keywords
+            # This prevents issues with punctuation in keyword extraction
+            keywords_in_query = self._query_keywords(q_lower)
+            if len(keywords_in_query) <= 1:  # Only add ? for very short queries
+                question = question.strip() + "?"
 
         try:
             # Fast path for common high-confidence intents

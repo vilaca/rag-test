@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+"""Test script to verify DRY question handling without hallucination guard."""
+
+import sys
+import os
+sys.path.insert(0, os.path.dirname(__file__))
+
+from rag.rag_system import RAGSystem
+
+def test_dry_no_hallucination_guard():
+    """Test the DRY question without hallucination guard."""
+    print("Testing DRY question handling without hallucination guard...")
+    
+    # Initialize system with the software engineering laws document
+    doc_path = "/Users/vilaca/work/rag-test/../tw/n-software-engineering-laws/n-software-engineering-laws.md"
+    
+    try:
+        rag = RAGSystem(doc_path)
+        rag.load_content()
+        rag.split_chunks()
+        rag.generate_embeddings()
+        rag.build_index()
+        
+        print(f"Loaded {len(rag.chunks)} chunks")
+        
+        # Test the DRY question
+        question = "explain DRY"
+        print(f"\nQuestion: {question}")
+        
+        # Temporarily disable hallucination guard
+        original_can_answer_be_supported = rag._can_answer_be_supported
+        rag._can_answer_be_supported = lambda answer, query, context: True
+        
+        answer = rag.query(question)
+        print(f"Answer: {answer}")
+        
+        # Restore original method
+        rag._can_answer_be_supported = original_can_answer_be_supported
+        
+        # Check if the answer is satisfactory
+        if "don't repeat yourself" in answer.lower() or "knowledge" in answer.lower():
+            print("✅ SUCCESS: Found relevant information about DRY")
+            return True
+        else:
+            print("❌ FAILURE: Did not find relevant information about DRY")
+            return False
+            
+    except Exception as e:
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+if __name__ == "__main__":
+    success = test_dry_no_hallucination_guard()
+    sys.exit(0 if success else 1)

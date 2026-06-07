@@ -411,7 +411,7 @@ class RetrievalMixin:
                 print("   - Model compatibility issues")
                 print("   - Corrupted model download")
                 print("   Try:")
-                print("   1. Using a different model")
+                print("   1. Using a different model (e.g., --embedding-model BAAI/bge-large-en-v1.5)")
                 print("   2. Upgrading transformers (pip install --upgrade transformers)")
                 print("   3. Clearing model cache (rm -rf ~/.cache/huggingface/hub/)")
             self.embeddings = None
@@ -490,6 +490,8 @@ class RetrievalMixin:
         # Get the combined chunks
         all_chunks = [self.chunks[idx] for idx in combined_indices[0] if idx < len(self.chunks)]
         
+
+        
         # Apply cross-encoder reranking if available (top 2x k)
         if hasattr(self, 'reranker') and self.reranker and len(all_chunks) > 1:
             reranked_chunks = self._rerank_with_cross_encoder(query, all_chunks, k * 2)
@@ -498,16 +500,24 @@ class RetrievalMixin:
             ranked_chunks, debug_info = self._re_rank_with_keywords(query, combined_scores, combined_indices)
             self.last_retrieval_debug = debug_info
             reranked_chunks = ranked_chunks[:k * 2]
+            
+
         
         # Apply diversity reranking (MMR) for broad questions
         if self._should_use_diversity(query):
             reranked_chunks = self._apply_mmr_diversity(query, reranked_chunks, k * 2)
+            
+
 
         # Filter out chunks that are not relevant to the query (using relative scoring)
         filtered_chunks = self._filter_relevant_chunks(query, reranked_chunks)
+        
+
 
         # Add contextual chunks if we found headings but not content
         filtered_chunks = self._add_contextual_chunks(query, filtered_chunks, combined_indices, combined_scores)
+        
+
 
         # Apply section-level boosting for comprehensive questions
         if self._should_boost_sections(query) and hasattr(self, 'chunk_metadata') and self.chunk_metadata:
@@ -518,6 +528,7 @@ class RetrievalMixin:
             filtered_chunks = [self._reconstruct_context(chunk) for chunk in filtered_chunks]
 
         # Return top-k results
+
         return filtered_chunks[:k]
     
     def _combine_retrieval_results(self, dense_scores, dense_indices, bm25_scores, bm25_indices, k):
@@ -603,7 +614,7 @@ class RetrievalMixin:
         
         # Extract meaningful keywords from query (exclude stop words)
         stop_words = {"the", "a", "an", "in", "on", "at", "to", "for", "of", "with", "by", "from", "as", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did", "will", "would", "could", "should", "explain", "describe", "what"}
-        query_keywords = [word.lower() for word in query.split() if word.lower() not in stop_words and len(word) > 2]
+        query_keywords = [word.lower() for word in query.split() if word.lower() not in stop_words and len(word) >= 2]
         
         if not query_keywords:
             return chunks
@@ -613,8 +624,8 @@ class RetrievalMixin:
         for chunk in chunks:
             chunk_lower = chunk.lower()
             
-            # Count how many query keywords appear in the chunk
-            keyword_matches = sum(1 for keyword in query_keywords if keyword in chunk_lower)
+            # Count how many query keywords appear in the chunk (case-insensitive)
+            keyword_matches = sum(1 for keyword in query_keywords if keyword.lower() in chunk_lower)
             
             # Calculate relevance score (0-1)
             relevance_score = keyword_matches / len(query_keywords)
@@ -635,18 +646,46 @@ class RetrievalMixin:
         
         # Dynamic threshold based on query type and score distribution
         query_lower = query.lower()
+        
+        # Be more lenient when there are few query keywords
+        # (few keywords means many chunks might have similar relevance)
+        few_keywords = len(query_keywords) <= 2
+        very_few_keywords = len(query_keywords) == 1
+        
         if any(query_lower.startswith(prefix) for prefix in ["explain ", "describe ", "what are "]):
-            # More lenient for broad questions (40% of top score)
-            threshold = top_score * 0.4
+            # More lenient for broad questions
+            if very_few_keywords:
+                threshold = top_score * 0.2  # Very lenient for single keyword
+            elif few_keywords:
+                threshold = top_score * 0.3  # Lenient for 2 keywords
+            else:
+                threshold = top_score * 0.4
         elif any(query_lower.startswith(prefix) for prefix in ["define ", "what is ", "who is "]):
-            # Stricter for specific questions (60% of top score)
-            threshold = top_score * 0.6
+            # Stricter for specific questions
+            if very_few_keywords:
+                threshold = top_score * 0.3  # More lenient for single keyword
+            elif few_keywords:
+                threshold = top_score * 0.5
+            else:
+                threshold = top_score * 0.6
         else:
-            # Default threshold (50% of top score)
-            threshold = top_score * 0.5
+            # Default threshold
+            if very_few_keywords:
+                threshold = top_score * 0.25  # More lenient for single keyword
+            elif few_keywords:
+                threshold = top_score * 0.4
+            else:
+                threshold = top_score * 0.5
         
         # Ensure minimum reasonable threshold
-        threshold = max(0.2, threshold)
+        threshold = max(0.1, threshold)  # Very low minimum for single keyword queries
+        
+        # Special case: if we have very few results after filtering, be more lenient
+        if len(scored_chunks) > 10 and threshold > 0.2:
+            # If we would filter out more than 80% of chunks, reduce threshold
+            potential_filtered = [score for score, chunk in scored_chunks if score >= threshold]
+            if len(potential_filtered) < len(scored_chunks) * 0.2:  # Less than 20% would pass
+                threshold = max(0.1, threshold * 0.7)  # Reduce threshold by 30%
         
         # Filter chunks
         filtered_chunks = [chunk for score, chunk in scored_chunks if score >= threshold]
@@ -712,10 +751,14 @@ class RetrievalMixin:
         query_lower = query.lower().strip()
         
         # Use diversity for broad questions
-        return any(query_lower.startswith(prefix) for prefix in [
-            "explain ", "describe ", "overview of ", "what are ", 
+        result = any(query_lower.startswith(prefix) for prefix in [
+            "describe ", "overview of ", "what are ", 
             "list ", "summarize ", "compare ", "differences between "
         ])
+        
+
+            
+        return result
     
     def _apply_mmr_diversity(self, query: str, chunks: List[str], top_k: int) -> List[str]:
         """Apply Maximum Marginal Relevance for diverse retrieval."""
@@ -871,17 +914,17 @@ class RetrievalMixin:
         
         # Look for 2-3 word phrases that contain meaningful terms
         for i in range(len(words) - 1):
-            phrase = f"{words[i]} {words[i+1]}"
+            phrase = f"{words[i].rstrip('?,.!;:')} {words[i+1].rstrip('?,.!;:')}"
             if any(word not in stop_words for word in phrase.split()):
                 key_phrases.append(phrase)
             
             if i < len(words) - 2:
-                phrase3 = f"{words[i]} {words[i+1]} {words[i+2]}"
+                phrase3 = f"{words[i].rstrip('?,.!;:')} {words[i+1].rstrip('?,.!;:')} {words[i+2].rstrip('?,.!;:')}"
                 if any(word not in stop_words for word in phrase3.split()):
                     key_phrases.append(phrase3)
         
-        # Also add single key words
-        key_words = [word for word in words if word not in stop_words and len(word) > 3]
+        # Also add single key words (strip punctuation)
+        key_words = [word.rstrip('?,.!;:') for word in words if word not in stop_words and len(word) >= 2]
         
         # Add synonyms for common question words
         # Map "define" to the actual term being defined
@@ -960,7 +1003,7 @@ class RetrievalMixin:
         # Build final result list
         ranked_chunks = []
         debug_info = []
-        max_results = min(12, len(boosted_results))  # Use fixed max like original k
+        max_results = len(boosted_results)  # Return all results for further processing
         
         for i, (final_score, idx, original_score, keyword_boost) in enumerate(boosted_results[:max_results]):
             chunk = self.chunks[idx]

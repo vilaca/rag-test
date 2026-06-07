@@ -7,9 +7,9 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 from rank_bm25 import BM25Okapi
 
-from rag.rag_answering import AnsweringMixin
+from rag.answering import AnsweringMixin
 from rag.rag_debug import print_retrieval_debug
-from rag.rag_retrieval import RetrievalMixin
+from rag.retrieval import RetrievalMixin
 
 
 class RAGSystem(RetrievalMixin, AnsweringMixin):
@@ -40,6 +40,10 @@ class RAGSystem(RetrievalMixin, AnsweringMixin):
         except Exception as e:
             if "nv-embed" in embedding_model_name.lower():
                 print(f"⚠️  NV-Embed-v2 failed to load: {e}")
+                print("   Falling back to BAAI/bge-large-en-v1.5...")
+                self.embedding_model = SentenceTransformer("BAAI/bge-large-en-v1.5")
+            elif "gte-large" in embedding_model_name.lower():
+                print(f"⚠️  Alibaba-NLP/gte-large model failed to load: {e}")
                 print("   Falling back to BAAI/bge-large-en-v1.5...")
                 self.embedding_model = SentenceTransformer("BAAI/bge-large-en-v1.5")
             else:
