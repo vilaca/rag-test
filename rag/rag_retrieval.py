@@ -441,8 +441,9 @@ class RetrievalMixin:
         if not self.chunks or self.index is None:
             return []
 
-        # Get more candidates initially for reranking (4x the requested k)
-        retrieval_k = min(k * 4, len(self.chunks))
+        # Adaptive candidate pool based on query complexity
+        retrieval_k = self._get_adaptive_retrieval_k(query, k)
+        retrieval_k = min(retrieval_k, len(self.chunks))
         
         # Dense retrieval using FAISS
         query_embedding = self.embedding_model.encode([query], convert_to_numpy=True).astype("float32")
@@ -470,6 +471,10 @@ class RetrievalMixin:
             ranked_chunks, debug_info = self._re_rank_with_keywords(query, combined_scores, combined_indices)
             self.last_retrieval_debug = debug_info
             reranked_chunks = ranked_chunks[:k * 2]
+        
+        # Apply diversity reranking (MMR) for broad questions
+        if self._should_use_diversity(query):
+            reranked_chunks = self._apply_mmr_diversity(query, reranked_chunks, k * 2)
 
         # Filter out chunks that are not relevant to the query (using relative scoring)
         filtered_chunks = self._filter_relevant_chunks(query, reranked_chunks)
@@ -477,6 +482,10 @@ class RetrievalMixin:
         # Add contextual chunks if we found headings but not content
         filtered_chunks = self._add_contextual_chunks(query, filtered_chunks, combined_indices, combined_scores)
 
+        # Apply section-level boosting for comprehensive questions
+        if self._should_boost_sections(query) and hasattr(self, 'chunk_metadata') and self.chunk_metadata:
+            filtered_chunks = self._apply_section_boosting(query, filtered_chunks, k * 2)
+        
         # Reconstruct context using hierarchical metadata
         if hasattr(self, 'chunk_metadata') and self.chunk_metadata:
             filtered_chunks = [self._reconstruct_context(chunk) for chunk in filtered_chunks]
@@ -633,6 +642,24 @@ class RetrievalMixin:
         
         return chunk
 
+    def _get_adaptive_retrieval_k(self, query: str, base_k: int) -> int:
+        """Determine adaptive retrieval pool size based on query complexity."""
+        query_lower = query.lower().strip()
+        
+        # Classify query type
+        if any(query_lower.startswith(prefix) for prefix in ["explain ", "describe ", "overview of ", "what are "]):
+            # Broad questions need more candidates for good coverage
+            return base_k * 12  # 150 for k=12
+        elif any(keyword in query_lower for keyword in [" and ", " or ", " versus ", " vs "]):
+            # Complex comparative questions
+            return base_k * 8  # 100 for k=12
+        elif len(query_lower.split()) > 8:
+            # Long detailed questions
+            return base_k * 6  # 75 for k=12
+        else:
+            # Short specific questions
+            return base_k * 4  # 50 for k=12
+    
     def _rerank_with_cross_encoder(self, query: str, chunks: List[str], top_k: int = 20) -> List[str]:
         """Rerank chunks using cross-encoder for better relevance."""
         if not hasattr(self, 'reranker') or not self.reranker or not chunks:
@@ -651,6 +678,137 @@ class RetrievalMixin:
             
         except Exception as e:
             print(f"⚠️  Reranking failed, falling back to original order: {e}")
+            return chunks[:top_k]
+    
+    def _should_use_diversity(self, query: str) -> bool:
+        """Determine if query would benefit from diversity reranking."""
+        query_lower = query.lower().strip()
+        
+        # Use diversity for broad questions
+        return any(query_lower.startswith(prefix) for prefix in [
+            "explain ", "describe ", "overview of ", "what are ", 
+            "list ", "summarize ", "compare ", "differences between "
+        ])
+    
+    def _apply_mmr_diversity(self, query: str, chunks: List[str], top_k: int) -> List[str]:
+        """Apply Maximum Marginal Relevance for diverse retrieval."""
+        if len(chunks) <= 1:
+            return chunks
+        
+        try:
+            # Get query embedding
+            query_embedding = self.embedding_model.encode([query], convert_to_numpy=True).astype("float32")
+            
+            # Get chunk embeddings
+            chunk_embeddings = self.embedding_model.encode(chunks, convert_to_numpy=True).astype("float32")
+            
+            # MMR algorithm: balance relevance and diversity
+            selected_indices = []
+            selected_embeddings = []
+            
+            # Start with most relevant
+            query_similarities = np.dot(chunk_embeddings, query_embedding.T).flatten()
+            most_relevant_idx = np.argmax(query_similarities)
+            selected_indices.append(most_relevant_idx)
+            selected_embeddings.append(chunk_embeddings[most_relevant_idx])
+            
+            # Select remaining for diversity
+            for _ in range(1, min(top_k, len(chunks))):
+                # Calculate MMR scores: relevance - diversity
+                diversity_scores = []
+                
+                for i in range(len(chunks)):
+                    if i in selected_indices:
+                        diversity_scores.append(-1)  # Already selected
+                        continue
+                    
+                    # Relevance to query
+                    relevance = query_similarities[i]
+                    
+                    # Diversity (negative similarity to already selected)
+                    diversity = 0.0
+                    for selected_emb in selected_embeddings:
+                        similarity = np.dot(chunk_embeddings[i], selected_emb.T)
+                        diversity -= similarity  # Penalize similarity
+                    
+                    # MMR score: relevance + diversity
+                    mmr_score = 0.7 * relevance + 0.3 * diversity
+                    diversity_scores.append(mmr_score)
+                
+                # Select chunk with highest MMR score
+                if diversity_scores:
+                    best_idx = np.argmax(diversity_scores)
+                    if diversity_scores[best_idx] > -1:  # Valid candidate
+                        selected_indices.append(best_idx)
+                        selected_embeddings.append(chunk_embeddings[best_idx])
+            
+            # Return diverse chunks
+            return [chunks[i] for i in selected_indices]
+            
+        except Exception as e:
+            print(f"⚠️  MMR diversity failed, falling back to original order: {e}")
+            return chunks[:top_k]
+    
+    def _should_boost_sections(self, query: str) -> bool:
+        """Determine if query would benefit from section-level boosting."""
+        query_lower = query.lower().strip()
+        
+        # Boost sections for comprehensive questions about specific topics
+        return any(query_lower.startswith(prefix) for prefix in [
+            "explain ", "describe ", "how does ", "what is the process of ",
+            "walk me through ", "detail the steps of "
+        ])
+    
+    def _apply_section_boosting(self, query: str, chunks: List[str], top_k: int) -> List[str]:
+        """Boost chunks from sections that contain highly relevant chunks."""
+        if len(chunks) <= 1 or not self.chunk_metadata:
+            return chunks
+        
+        try:
+            # Find which sections have highly relevant chunks
+            section_scores = {}
+            
+            for i, chunk in enumerate(chunks):
+                # Find metadata for this chunk
+                for meta in self.chunk_metadata:
+                    if meta['chunk_text'] == chunk:
+                        section_key = f"{meta['section_index']}_{meta['section_title']}"
+                        section_scores[section_key] = section_scores.get(section_key, 0) + 1
+                        break
+            
+            # Identify high-scoring sections
+            if section_scores:
+                max_score = max(section_scores.values())
+                high_score_sections = {section for section, score in section_scores.items() if score >= max_score * 0.7}
+            else:
+                high_score_sections = set()
+            
+            # Boost chunks from high-scoring sections
+            if high_score_sections:
+                boosted_chunks = []
+                remaining_chunks = list(chunks)
+                
+                # First pass: add chunks from high-score sections
+                for chunk in chunks:
+                    for meta in self.chunk_metadata:
+                        if meta['chunk_text'] == chunk:
+                            section_key = f"{meta['section_index']}_{meta['section_title']}"
+                            if section_key in high_score_sections:
+                                boosted_chunks.append(chunk)
+                                if chunk in remaining_chunks:
+                                    remaining_chunks.remove(chunk)
+                                break
+                
+                # Second pass: add remaining chunks
+                boosted_chunks.extend(remaining_chunks)
+                
+                # Return top-k boosted chunks
+                return boosted_chunks[:top_k]
+            
+            return chunks[:top_k]
+            
+        except Exception as e:
+            print(f"⚠️  Section boosting failed: {e}")
             return chunks[:top_k]
 
     def _contains_related_terms(self, chunk: str, keywords: List[str]) -> bool:
